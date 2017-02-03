@@ -1,16 +1,16 @@
 2016-07-20
 ----------
 
-  * Global `asmjit_cast<>` removed and introduced a more type-safe `asmjit::ptr_cast<>`, which can cast a function to `void*` (and vice-versa), but will refuse to cast a function to `void**`, for example. Just change `asmjit_cast` to `asmjit::ptr_cast` and everything should work as usual. As a consequence, the Runtime now contains a typesafe (templated) `add()` and `remove()` methods that accept a function type directly, no need to cast manually to `void*` and `void**`. If you use your own runtime rename your virtual methods from `add` to `_add` and from `release` to `_release` and enjoy the type-safe wrappers.
+  * Global `asmjit_cast<>` removed and introduced a more type-safe `asmjit::ptr_as_func<>` and `asmjit::func_as_ptr<>` that can cast between a function and `void*` pointer, but will refuse to cast a function to `void**`, for example. Just change `asmjit_cast` to `asmjit::ptr_as_func` and everything should work as usual. As a consequence, the Runtime now contains a typesafe (templated) `add()` and `remove()` methods that accept a function type directly, no need to cast manually to `void*` and `void**`. If you use your own runtime rename your virtual methods from `add` to `_add` and from `release` to `_release` and enjoy the type-safe wrappers.
   * Removed `Logger::Style` and `uint32_t style` parameter in Logging API. It was never used for anything so it was removed.
   * There is a new `CodeEmitter` base class that defines assembler building blocks that are implemented by `Assembler` and `CodeBuilder`. `CodeCompiler` is now based on `CodeBuilder` and shares its instruction storage functionality. Most API haven't changed, just base classes and new functionality has been added. It's now possible to serialize code for further processing by using `CodeBuilder`.
-  * Renamed compile-time macro `ASMJIT_DISABLE_LOGGER` to `ASMJIT_DISABLE_LOGGING`. There is a new `Formatter` class which is also disabled with this option.
+  * Renamed compile-time macro `ASMJIT_DISABLE_LOGGER` to `ASMJIT_DISABLE_LOGGING`.
 
   * Operand API is mostly intact, omitting Var/Reg should fix most compile-time errors. There is now no difference between a register index and register id internally. If you ever used `reg.getRegIndex()` then use `reg.getId()` instead. Also renamed `isInitialized()` to `isValid()`.
     * There are much more changes, but they are mostly internal and keeping most operand methods compatible.
     * Added new functionality into `asmjit::x86` namespace related to operands.
     * X86Xmm/X86Ymm/X86Zmm register operands now inherit from X86Vec.
-    * Register kind (was register class) is now part of `Reg` operand, you can get it by using `reg.getRegKind()`.
+    * Register kind (was register class) is now part of `Reg` operand, you can get it by using `reg.getKind()`.
     * Register class enum moved to `X86Reg`, `kX86RegClassGp` is now `X86Reg::kKindGp`.
     * Register type enum moved to `X86Reg`, `kX86RegTypeXmm` is now `X86Reg::kRegXmm`.
     * Register index enum moved to `X86Gp`, `kX86RegIndexAx` is now `X86Gp::kIdAx`.

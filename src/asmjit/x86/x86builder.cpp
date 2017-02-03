@@ -12,6 +12,7 @@
 #if defined(ASMJIT_BUILD_X86) && !defined(ASMJIT_DISABLE_COMPILER)
 
 // [Dependencies]
+#include "../x86/x86assembler.h"
 #include "../x86/x86builder.h"
 
 // [Api-Begin]
@@ -49,14 +50,21 @@ Error X86Builder::onAttach(CodeHolder* code) noexcept {
 }
 
 // ============================================================================
-// [asmjit::X86Builder - Inst]
+// [asmjit::X86Builder - Finalize]
 // ============================================================================
 
-Error X86Builder::_emit(uint32_t instId, const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_& o3) {
-  // TODO:
-  return kErrorOk;
-}
+Error X86Builder::finalize() {
+  ASMJIT_PROPAGATE(runPasses());
 
+  // TODO: There must be possibility to attach more assemblers, this is not so nice.
+  if (_code->_cgAsm) {
+    return serialize(_code->_cgAsm);
+  }
+  else {
+    X86Assembler a(_code);
+    return serialize(&a);
+  }
+}
 } // asmjit namespace
 
 // [Api-End]

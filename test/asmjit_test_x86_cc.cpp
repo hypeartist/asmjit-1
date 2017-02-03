@@ -55,16 +55,29 @@ public:
   // [Construction / Destruction]
   // --------------------------------------------------------------------------
 
-  X86TestManager();
-  ~X86TestManager();
+  X86TestManager()
+    : _zone(8096 - Zone::kZoneOverhead),
+      _zoneHeap(&_zone),
+      _returnCode(0),
+      _binSize(0),
+      _verbose(false) {}
+
+  ~X86TestManager() {
+    size_t i;
+    size_t count = _tests.getLength();
+
+    for (i = 0; i < count; i++) {
+      X86Test* test = _tests[i];
+      delete test;
+    }
+  }
 
   // --------------------------------------------------------------------------
-  // [Methods]
+  // [Interface]
   // --------------------------------------------------------------------------
 
-  inline Error add(X86Test* test) { return _tests.append(&_zoneHeap, test); }
-
-  int run();
+  Error addTest(X86Test* test) { return _tests.append(&_zoneHeap, test); }
+  int runTests();
 
   // --------------------------------------------------------------------------
   // [Members]
@@ -80,35 +93,21 @@ public:
   StringBuilder _output;
 };
 
-X86TestManager::X86TestManager() :
-  _zone(8096 - Zone::kZoneOverhead),
-  _zoneHeap(&_zone),
-  _returnCode(0),
-  _binSize(0),
-  _verbose(false) {}
-
-X86TestManager::~X86TestManager() {
-  size_t i;
-  size_t count = _tests.getLength();
-
-  for (i = 0; i < count; i++) {
-    X86Test* test = _tests[i];
-    delete test;
-  }
-}
-
-int X86TestManager::run() {
+int X86TestManager::runTests() {
   size_t i;
   size_t count = _tests.getLength();
 
   FILE* file = stdout;
 
 #if !defined(ASMJIT_DISABLE_LOGGING)
+  uint32_t logOptions = Logger::kOptionBinaryForm |
+                        Logger::kOptionImmExtended;
+
   FileLogger fileLogger(file);
-  fileLogger.addOptions(Logger::kOptionBinaryForm);
+  fileLogger.addOptions(logOptions);
 
   StringLogger stringLogger;
-  stringLogger.addOptions(Logger::kOptionBinaryForm);
+  stringLogger.addOptions(logOptions);
 #endif // ASMJIT_DISABLE_LOGGING
 
   MyErrorHandler errorHandler;
@@ -135,12 +134,19 @@ int X86TestManager::run() {
     X86Test* test = _tests[i];
     test->compile(cc);
 
+    {
+      StringBuilder sb;
+      cc.dump(sb, Logger::kOptionImmExtended);
+      printf("%s", sb.getData());
+    }
     Error err = cc.finalize();
     void* func;
 
     if (err == kErrorOk)
       err = runtime.add(&func, &code);
-    if (_verbose) fflush(file);
+
+    if (_verbose)
+      fflush(file);
 
     if (err == kErrorOk) {
       StringBuilder result;
@@ -196,23 +202,19 @@ int X86TestManager::run() {
 
 class X86Test_AlignBase : public X86Test {
 public:
-  X86Test_AlignBase(uint32_t numArgs, uint32_t numVars, uint32_t alignment, bool naked) :
-    _numArgs(numArgs),
-    _numVars(numVars),
-    _alignment(alignment),
-    _naked(naked) {
-
+  X86Test_AlignBase(uint32_t numArgs, uint32_t alignment, bool naked)
+    : _numArgs(numArgs),
+      _alignment(alignment),
+      _naked(naked) {
     _name.setFormat("[Align] NumArgs=%u NumVars=%u Alignment=%u Naked=%c",
-      numArgs, numVars, alignment, naked ? 'Y' : 'N');
+      numArgs, alignment, naked ? 'Y' : 'N');
   }
 
   static void add(X86TestManager& mgr) {
     for (uint32_t i = 0; i <= 8; i++) {
-      for (uint32_t j = 0; j <= 4; j++) {
-        for (uint32_t a = 16; a <= 32; a += 16) {
-          mgr.add(new X86Test_AlignBase(i, j, a, false));
-          mgr.add(new X86Test_AlignBase(i, j, a, true));
-        }
+      for (uint32_t a = 16; a <= 32; a += 16) {
+        mgr.addTest(new X86Test_AlignBase(i, a, false));
+        mgr.addTest(new X86Test_AlignBase(i, a, true));
       }
     }
   }
@@ -236,28 +238,6 @@ public:
     X86Gp gpVar = cc.newIntPtr("gpVar");
     X86Gp gpSum = cc.newInt32("gpSum");
     X86Mem stack = cc.newStack(_alignment, _alignment);
-
-    // Alloc, use and spill preserved registers.
-    if (_numVars) {
-      uint32_t gpCount = cc.getGpCount();
-      uint32_t varIndex = 0;
-      uint32_t physId = 0;
-      uint32_t regMask = 0x1;
-      uint32_t preservedMask = cc.getFunc()->getDetail().getPreservedRegs(Reg::kKindGp);
-
-      do {
-        if ((preservedMask & regMask) != 0 && (physId != X86Gp::kIdSp && physId != X86Gp::kIdBp)) {
-          X86Gp tmp = cc.newInt32("gpTmp%u", physId);
-          cc.alloc(tmp, physId);
-          cc.xor_(tmp, tmp);
-          cc.spill(tmp);
-          varIndex++;
-        }
-
-        physId++;
-        regMask <<= 1;
-      } while (varIndex < _numVars && physId < gpCount);
-    }
 
     // Do a sum of arguments to verify a possible relocation when misaligned.
     if (_numArgs) {
@@ -342,7 +322,6 @@ public:
   }
 
   uint32_t _numArgs;
-  uint32_t _numVars;
   uint32_t _alignment;
 
   bool _naked;
@@ -357,7 +336,7 @@ public:
   X86Test_AlignNone() : X86Test("[Align] None") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AlignNone());
+    mgr.addTest(new X86Test_AlignNone());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -385,7 +364,7 @@ public:
   X86Test_JumpCross() : X86Test("[Jump] Cross jump") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_JumpCross());
+    mgr.addTest(new X86Test_JumpCross());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -427,7 +406,7 @@ public:
   X86Test_JumpMany() : X86Test("[Jump] Many jumps") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_JumpMany());
+    mgr.addTest(new X86Test_JumpMany());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -468,7 +447,7 @@ public:
   X86Test_JumpUnreachable1() : X86Test("[Jump] Unreachable #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_JumpUnreachable1());
+    mgr.addTest(new X86Test_JumpUnreachable1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -531,7 +510,7 @@ public:
   X86Test_JumpUnreachable2() : X86Test("[Jump] Unreachable #2") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_JumpUnreachable2());
+    mgr.addTest(new X86Test_JumpUnreachable2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -578,7 +557,7 @@ public:
   X86Test_AllocBase() : X86Test("[Alloc] Base") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocBase());
+    mgr.addTest(new X86Test_AllocBase());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -621,115 +600,6 @@ public:
 };
 
 // ============================================================================
-// [X86Test_AllocManual]
-// ============================================================================
-
-class X86Test_AllocManual : public X86Test {
-public:
-  X86Test_AllocManual() : X86Test("[Alloc] Manual alloc/spill") {}
-
-  static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocManual());
-  }
-
-  virtual void compile(X86Compiler& cc) {
-    cc.addFunc(FuncSignature0<int>(CallConv::kIdHost));
-
-    X86Gp v0  = cc.newInt32("v0");
-    X86Gp v1  = cc.newInt32("v1");
-    X86Gp cnt = cc.newInt32("cnt");
-
-    cc.xor_(v0, v0);
-    cc.xor_(v1, v1);
-    cc.spill(v0);
-    cc.spill(v1);
-
-    Label L = cc.newLabel();
-    cc.mov(cnt, 32);
-    cc.bind(L);
-
-    cc.inc(v1);
-    cc.add(v0, v1);
-
-    cc.dec(cnt);
-    cc.jnz(L);
-
-    cc.ret(v0);
-    cc.endFunc();
-  }
-
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
-    typedef int (*Func)(void);
-    Func func = ptr_as_func<Func>(_func);
-
-    int resultRet = func();
-    int expectRet =
-      0  +  1 +  2 +  3 +  4 +  5 +  6 +  7 +  8 +  9 +
-      10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 +
-      20 + 21 + 22 + 23 + 24 + 25 + 26 + 27 + 28 + 29 +
-      30 + 31 + 32;
-
-    result.setFormat("ret=%d", resultRet);
-    expect.setFormat("ret=%d", expectRet);
-
-    return resultRet == expectRet;
-  }
-};
-
-// ============================================================================
-// [X86Test_AllocUseMem]
-// ============================================================================
-
-class X86Test_AllocUseMem : public X86Test {
-public:
-  X86Test_AllocUseMem() : X86Test("[Alloc] Alloc/use mem") {}
-
-  static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocUseMem());
-  }
-
-  virtual void compile(X86Compiler& cc) {
-    cc.addFunc(FuncSignature2<int, int, int>(CallConv::kIdHost));
-
-    X86Gp iIdx = cc.newInt32("iIdx");
-    X86Gp iEnd = cc.newInt32("iEnd");
-
-    X86Gp aIdx = cc.newInt32("aIdx");
-    X86Gp aEnd = cc.newInt32("aEnd");
-
-    Label L_1 = cc.newLabel();
-
-    cc.setArg(0, aIdx);
-    cc.setArg(1, aEnd);
-
-    cc.mov(iIdx, aIdx);
-    cc.mov(iEnd, aEnd);
-    cc.spill(iEnd);
-
-    cc.bind(L_1);
-    cc.inc(iIdx);
-    cc.cmp(iIdx, iEnd.m());
-    cc.jne(L_1);
-
-    cc.ret(iIdx);
-    cc.endFunc();
-  }
-
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
-    typedef int (*Func)(int, int);
-    Func func = ptr_as_func<Func>(_func);
-
-    int resultRet = func(10, 20);
-    int expectRet = 20;
-
-    result.setFormat("ret=%d", resultRet);
-    expect.setFormat("ret=%d", expectRet);
-
-    return resultRet == expectRet;
-  }
-};
-
-// ============================================================================
 // [X86Test_AllocMany1]
 // ============================================================================
 
@@ -740,7 +610,7 @@ public:
   enum { kCount = 8 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocMany1());
+    mgr.addTest(new X86Test_AllocMany1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -818,7 +688,7 @@ public:
   X86Test_AllocMany2() : X86Test("[Alloc] Many #2") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocMany2());
+    mgr.addTest(new X86Test_AllocMany2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -893,7 +763,7 @@ public:
   X86Test_AllocImul1() : X86Test("[Alloc] IMUL #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocImul1());
+    mgr.addTest(new X86Test_AllocImul1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -949,7 +819,7 @@ public:
   X86Test_AllocImul2() : X86Test("[Alloc] IMUL #2") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocImul2());
+    mgr.addTest(new X86Test_AllocImul2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1003,7 +873,7 @@ public:
   X86Test_AllocIdiv1() : X86Test("[Alloc] IDIV #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocIdiv1());
+    mgr.addTest(new X86Test_AllocIdiv1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1049,7 +919,7 @@ public:
   X86Test_AllocSetz() : X86Test("[Alloc] SETZ") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocSetz());
+    mgr.addTest(new X86Test_AllocSetz());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1100,7 +970,7 @@ public:
   X86Test_AllocShlRor() : X86Test("[Alloc] SHL/ROR") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocShlRor());
+    mgr.addTest(new X86Test_AllocShlRor());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1152,7 +1022,7 @@ public:
   enum { kCount = 32 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocGpLo());
+    mgr.addTest(new X86Test_AllocGpLo());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1241,7 +1111,7 @@ public:
   X86Test_AllocRepMovsb() : X86Test("[Alloc] REP MOVS") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocRepMovsb());
+    mgr.addTest(new X86Test_AllocRepMovsb());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1283,7 +1153,7 @@ public:
   X86Test_AllocIfElse1() : X86Test("[Alloc] If-Else #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocIfElse1());
+    mgr.addTest(new X86Test_AllocIfElse1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1312,7 +1182,7 @@ public:
     cc.endFunc();
   }
 
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect)  {
+  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
     typedef int (*Func)(int, int);
     Func func = ptr_as_func<Func>(_func);
 
@@ -1335,7 +1205,7 @@ public:
   X86Test_AllocIfElse2() : X86Test("[Alloc] If-Else #2") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocIfElse2());
+    mgr.addTest(new X86Test_AllocIfElse2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1373,7 +1243,7 @@ public:
     cc.endFunc();
   }
 
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect)  {
+  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
     typedef int (*Func)(int, int);
     Func func = ptr_as_func<Func>(_func);
 
@@ -1396,7 +1266,7 @@ public:
   X86Test_AllocIfElse3() : X86Test("[Alloc] If-Else #3") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocIfElse3());
+    mgr.addTest(new X86Test_AllocIfElse3());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1434,7 +1304,7 @@ public:
     cc.endFunc();
   }
 
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect)  {
+  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
     typedef int (*Func)(int, int);
     Func func = ptr_as_func<Func>(_func);
 
@@ -1457,7 +1327,7 @@ public:
   X86Test_AllocIfElse4() : X86Test("[Alloc] If-Else #4") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocIfElse4());
+    mgr.addTest(new X86Test_AllocIfElse4());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1500,7 +1370,7 @@ public:
     cc.endFunc();
   }
 
-  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect)  {
+  virtual bool run(void* _func, StringBuilder& result, StringBuilder& expect) {
     typedef int (*Func)(int, int);
     Func func = ptr_as_func<Func>(_func);
 
@@ -1523,7 +1393,7 @@ public:
   X86Test_AllocInt8() : X86Test("[Alloc] Int8") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocInt8());
+    mgr.addTest(new X86Test_AllocInt8());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1562,7 +1432,7 @@ public:
   X86Test_AllocArgsIntPtr() : X86Test("[Alloc] Args IntPtr") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocArgsIntPtr());
+    mgr.addTest(new X86Test_AllocArgsIntPtr());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1621,7 +1491,7 @@ public:
   X86Test_AllocArgsFloat() : X86Test("[Alloc] Args Float") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocArgsFloat());
+    mgr.addTest(new X86Test_AllocArgsFloat());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1675,7 +1545,7 @@ public:
   X86Test_AllocArgsDouble() : X86Test("[Alloc] Args Double") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocArgsDouble());
+    mgr.addTest(new X86Test_AllocArgsDouble());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1729,7 +1599,7 @@ public:
   X86Test_AllocRetFloat() : X86Test("[Alloc] Ret Float") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocRetFloat());
+    mgr.addTest(new X86Test_AllocRetFloat());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1770,7 +1640,7 @@ public:
   X86Test_AllocRetDouble() : X86Test("[Alloc] Ret Double") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocRetDouble());
+    mgr.addTest(new X86Test_AllocRetDouble());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1813,7 +1683,7 @@ public:
   enum { kSize = 256 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocStack1());
+    mgr.addTest(new X86Test_AllocStack1());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1881,7 +1751,7 @@ public:
   enum { kSize = 256 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocStack2());
+    mgr.addTest(new X86Test_AllocStack2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1963,7 +1833,7 @@ public:
   enum { kCount = 32 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocMemcpy());
+    mgr.addTest(new X86Test_AllocMemcpy());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -1979,16 +1849,12 @@ public:
     cc.setArg(1, src);
     cc.setArg(2, cnt);
 
-    cc.alloc(dst);                                  // Allocate all registers now,
-    cc.alloc(src);                                  // because we want to keep them
-    cc.alloc(cnt);                                  // in physical registers only.
-
     cc.test(cnt, cnt);                              // Exit if length is zero.
     cc.jz(L_Exit);
 
     cc.bind(L_Loop);                                // Bind the loop label here.
 
-    X86Gp tmp = cc.newInt32("tmp");              // Copy a single dword (4 bytes).
+    X86Gp tmp = cc.newInt32("tmp");                 // Copy a single dword (4 bytes).
     cc.mov(tmp, x86::dword_ptr(src));
     cc.mov(x86::dword_ptr(dst), tmp);
 
@@ -2049,7 +1915,7 @@ public:
   enum { kCount = 17 };
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_AllocAlphaBlend());
+    mgr.addTest(new X86Test_AllocAlphaBlend());
   }
 
   static uint32_t blendSrcOver(uint32_t d, uint32_t s) {
@@ -2126,7 +1992,7 @@ public:
   X86Test_CallBase() : X86Test("[Call] CDecl") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallBase());
+    mgr.addTest(new X86Test_CallBase());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2183,7 +2049,7 @@ public:
   X86Test_CallFast() : X86Test("[Call] Fastcall") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallFast());
+    mgr.addTest(new X86Test_CallFast());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2236,7 +2102,7 @@ public:
   X86Test_CallManyArgs() : X86Test("[Call] Many Args") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallManyArgs());
+    mgr.addTest(new X86Test_CallManyArgs());
   }
 
   static int calledFunc(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j) {
@@ -2312,7 +2178,7 @@ public:
   X86Test_CallDuplicateArgs() : X86Test("[Call] Duplicate Args") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallDuplicateArgs());
+    mgr.addTest(new X86Test_CallDuplicateArgs());
   }
 
   static int calledFunc(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j) {
@@ -2370,7 +2236,7 @@ public:
   X86Test_CallImmArgs() : X86Test("[Call] Imm Args") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallImmArgs());
+    mgr.addTest(new X86Test_CallImmArgs());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2423,7 +2289,7 @@ public:
   X86Test_CallPtrArgs() : X86Test("[Call] Ptr Args") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallPtrArgs());
+    mgr.addTest(new X86Test_CallPtrArgs());
   }
 
   static int calledFunc(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j) {
@@ -2489,7 +2355,7 @@ public:
   X86Test_CallFloatAsXmmRet() : X86Test("[Call] Float As Xmm Ret") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallFloatAsXmmRet());
+    mgr.addTest(new X86Test_CallFloatAsXmmRet());
   }
 
   static float calledFunc(float a, float b) {
@@ -2544,7 +2410,7 @@ public:
   X86Test_CallDoubleAsXmmRet() : X86Test("[Call] Double As Xmm Ret") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallDoubleAsXmmRet());
+    mgr.addTest(new X86Test_CallDoubleAsXmmRet());
   }
 
   static double calledFunc(double a, double b) {
@@ -2597,7 +2463,7 @@ public:
   X86Test_CallConditional() : X86Test("[Call] Conditional") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallConditional());
+    mgr.addTest(new X86Test_CallConditional());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2678,7 +2544,7 @@ public:
   X86Test_CallMultiple() : X86Test("[Call] Multiple") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMultiple());
+    mgr.addTest(new X86Test_CallMultiple());
   }
 
   static int ASMJIT_FASTCALL calledFunc(int* pInt, int index) {
@@ -2755,7 +2621,7 @@ public:
   X86Test_CallRecursive() : X86Test("[Call] Recursive") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallRecursive());
+    mgr.addTest(new X86Test_CallRecursive());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2805,7 +2671,7 @@ public:
   X86Test_CallMisc1() : X86Test("[Call] Misc #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMisc1());
+    mgr.addTest(new X86Test_CallMisc1());
   }
 
   static void dummy(int a, int b) {}
@@ -2822,9 +2688,6 @@ public:
 
     cc.setArg(0, a);
     cc.setArg(1, b);
-
-    cc.alloc(a, x86::eax);
-    cc.alloc(b, x86::ebx);
 
     CCFuncCall* call = cc.call(imm_ptr(dummy), FuncSignature2<void, int, int>(CallConv::kIdHost));
     call->setArg(0, a);
@@ -2859,7 +2722,7 @@ public:
   X86Test_CallMisc2() : X86Test("[Call] Misc #2") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMisc2());
+    mgr.addTest(new X86Test_CallMisc2());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2910,7 +2773,7 @@ public:
   X86Test_CallMisc3() : X86Test("[Call] Misc #3") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMisc3());
+    mgr.addTest(new X86Test_CallMisc3());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -2964,7 +2827,7 @@ public:
   X86Test_CallMisc4() : X86Test("[Call] Misc #4") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMisc4());
+    mgr.addTest(new X86Test_CallMisc4());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3012,7 +2875,7 @@ public:
   X86Test_CallMisc5() : X86Test("[Call] Misc #5") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_CallMisc5());
+    mgr.addTest(new X86Test_CallMisc5());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3025,14 +2888,12 @@ public:
     ASMJIT_ASSERT(regCount <= ASMJIT_ARRAY_SIZE(vars));
 
     cc.mov(pFn, imm_ptr(calledFunc));
-    cc.spill(pFn);
 
     for (i = 0; i < regCount; i++) {
       if (i == X86Gp::kIdBp || i == X86Gp::kIdSp)
         continue;
 
       vars[i] = cc.newInt32("v%u", static_cast<unsigned int>(i));
-      cc.alloc(vars[i], i);
       cc.mov(vars[i], 1);
     }
 
@@ -3072,7 +2933,7 @@ public:
   X86Test_MiscConstPool() : X86Test("[Misc] ConstPool #1") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_MiscConstPool());
+    mgr.addTest(new X86Test_MiscConstPool());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3114,7 +2975,7 @@ struct X86Test_MiscMultiRet : public X86Test {
   X86Test_MiscMultiRet() : X86Test("[Misc] MultiRet") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_MiscMultiRet());
+    mgr.addTest(new X86Test_MiscMultiRet());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3207,7 +3068,7 @@ public:
   X86Test_MiscMultiFunc() : X86Test("[Misc] MultiFunc") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_MiscMultiFunc());
+    mgr.addTest(new X86Test_MiscMultiFunc());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3272,7 +3133,7 @@ public:
   X86Test_MiscUnfollow() : X86Test("[Misc] Unfollow") {}
 
   static void add(X86TestManager& mgr) {
-    mgr.add(new X86Test_MiscUnfollow());
+    mgr.addTest(new X86Test_MiscUnfollow());
   }
 
   virtual void compile(X86Compiler& cc) {
@@ -3362,6 +3223,7 @@ int main(int argc, char* argv[]) {
   if (cmd.hasArg("--verbose"))
     testMgr._verbose = true;
 
+/*
   // Align.
   ADD_TEST(X86Test_AlignBase);
   ADD_TEST(X86Test_AlignNone);
@@ -3375,8 +3237,6 @@ int main(int argc, char* argv[]) {
 
   // Alloc.
   ADD_TEST(X86Test_AllocBase);
-  ADD_TEST(X86Test_AllocManual);
-  ADD_TEST(X86Test_AllocUseMem);
   ADD_TEST(X86Test_AllocMany1);
   ADD_TEST(X86Test_AllocMany2);
   ADD_TEST(X86Test_AllocImul1);
@@ -3399,8 +3259,9 @@ int main(int argc, char* argv[]) {
   ADD_TEST(X86Test_AllocStack1);
   ADD_TEST(X86Test_AllocStack2);
   ADD_TEST(X86Test_AllocMemcpy);
+*/
   ADD_TEST(X86Test_AllocAlphaBlend);
-
+/*
   // Call.
   ADD_TEST(X86Test_CallBase);
   ADD_TEST(X86Test_CallFast);
@@ -3424,6 +3285,7 @@ int main(int argc, char* argv[]) {
   ADD_TEST(X86Test_MiscMultiRet);
   ADD_TEST(X86Test_MiscMultiFunc);
   ADD_TEST(X86Test_MiscUnfollow);
+*/
 
-  return testMgr.run();
+  return testMgr.runTests();
 }

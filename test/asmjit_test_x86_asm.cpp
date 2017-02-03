@@ -48,7 +48,7 @@ static void makeFunc(X86Emitter* emitter) {
   FuncFrameLayout layout;                 // Create the FuncFrameLayout, which
   layout.init(func, ffi);                 // contains metadata of prolog/epilog.
 
-  // Emit function prolog and allocate arguments to registers.
+  // Emit prolog and allocate arguments to registers.
   FuncUtils::emitProlog(emitter, layout);
   FuncUtils::allocArgs(emitter, layout, args);
 
@@ -57,25 +57,45 @@ static void makeFunc(X86Emitter* emitter) {
   emitter->paddd(vec0, vec1);             // Add 4 ints in XMM1 to XMM0.
   emitter->movdqu(x86::ptr(dst), vec0);   // Store the result to [dst].
 
-  // Emit function epilog and return.
+  // Emit epilog and return.
   FuncUtils::emitEpilog(emitter, layout);
 }
 
-int main(int argc, char* argv[]) {
+static int testFunc(uint32_t emitterType) {
   JitRuntime rt;                          // Create JIT Runtime
+  FileLogger logger(stdout);              // Create logger that logs to stdout.
 
   CodeHolder code;                        // Create a CodeHolder.
   code.init(rt.getCodeInfo());            // Initialize it to match `rt`.
-  X86Assembler a(&code);                  // Create and attach X86Assembler to `code`.
+  code.setLogger(&logger);                // Attach logger to the code.
 
-  FileLogger logger(stderr);
-  code.setLogger(&logger);
+  Error err;
+  if (emitterType == CodeEmitter::kTypeAssembler) {
+    // Create the function by using X86Assembler.
+    printf("Using X86Assembler:\n");
+    X86Assembler a(&code);
+    makeFunc(a.asEmitter());
+  }
+  else {
+    // Create the function by using X86Builder.
+    printf("Using X86Builder:\n");
+    X86Builder cb(&code);
+    makeFunc(cb.asEmitter());
+    err = cb.finalize();
+    if (err) {
+      printf("X86Builder::finalize() failed: %s\n", DebugUtils::errorAsString(err));
+      return 1;
+    }
+  }
 
-  makeFunc(a.asEmitter());
-
+  // Add the code generated to the runtime.
   SumIntsFunc fn;
-  Error err = rt.add(&fn, &code);         // Add the code generated to the runtime.
-  if (err) return 1;                      // Handle a possible error case.
+  err = rt.add(&fn, &code);
+
+  if (err) {
+    printf("JitRuntime::add() failed: %s\n", DebugUtils::errorAsString(err));
+    return 1;
+  }
 
   // Execute the generated function.
   int inA[4] = { 4, 3, 2, 1 };
@@ -83,13 +103,14 @@ int main(int argc, char* argv[]) {
   int out[4];
   fn(out, inA, inB);
 
-  // Prints {5 8 4 9}
-  printf("{%d %d %d %d}\n", out[0], out[1], out[2], out[3]);
+  // Should print {5 8 4 9}.
+  printf("Result = { %d %d %d %d }\n\n", out[0], out[1], out[2], out[3]);
 
   rt.release(fn);
+  return !(out[0] == 5 && out[1] == 8 && out[2] == 4 && out[3] == 9);
+}
 
-  if (out[0] == 5 && out[1] == 8 && out[2] == 4 && out[3] == 9)
-    return 0;
-  else
-    return 1;
+int main(int argc, char* argv[]) {
+  return testFunc(CodeEmitter::kTypeAssembler) |
+         testFunc(CodeEmitter::kTypeBuilder);
 }

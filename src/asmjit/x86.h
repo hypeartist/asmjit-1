@@ -15,8 +15,8 @@
 #include "./x86/x86builder.h"
 #include "./x86/x86compiler.h"
 #include "./x86/x86emitter.h"
+#include "./x86/x86globals.h"
 #include "./x86/x86inst.h"
-#include "./x86/x86misc.h"
 #include "./x86/x86operand.h"
 
 // [Guard]

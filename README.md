@@ -1391,139 +1391,6 @@ static void exampleUseOfConstPool(X86Compiler& cc) {
 }
 ```
 
-### Code Injection
-
-Both **CodeBuilder** and **CodeCompiler** emitters store their nodes in a double-linked list, which makes it easy to manipulate during the code generation or after it. Each node is always emitted next to the current **cursor** and the cursor is changed to that newly emitted node. Cursor can be explicitly retrieved and assigned by **getCursor()** and **setCursor()**, respectively.
-
-The following example shows how to inject code at the beginning of the function by providing an **XmmConstInjector** helper class.
-
-```c++
-#include <asmjit/asmjit.h>
-#include <stdio.h>
-#include <vector>
-
-using namespace asmjit;
-
-// Simple injector that injects `movaps()` to the beginning of the function.
-class XmmConstInjector {
-public:
-  struct Slot {
-    X86Xmm reg;
-    Data128 value;
-  };
-
-  XmmConstInjector(X86Compiler* cc)
-    : _cc(cc),
-      _injectTarget(cc->getCursor()) {}
-
-  X86Xmm xmmOf(const Data128& value) {
-    // First reuse the register if it already holds the given `value`.
-    for (std::vector<Slot>::const_iterator it(_slots.begin()); it != _slots.end(); ++it) {
-      const Slot& slot = *it;
-      if (::memcmp(&slot.value, &value, sizeof(Data128)) == 0)
-        return slot.reg;
-    }
-
-    // Create a new register / value pair and store in `_slots`.
-    X86Xmm reg = _cc->newXmm("const%u", static_cast<unsigned int>(_slots.size()));
-
-    Slot newSlot;
-    newSlot.value = value;
-    newSlot.reg = reg;
-    _slots.push_back(newSlot);
-
-    // Create the constant and inject it after the injectTarget.
-    X86Mem mem = _cc->newConst(kConstScopeGlobal, &value, 16);
-    CBNode* saved = _cc->setCursor(_injectTarget);
-
-    _cc->movaps(reg, mem);
-    // Make sure we inject next load after the load we just emitted.
-    _injectTarget = _cc->getCursor();
-
-    // Restore the original cursor, so the code emitting can continue from where it was.
-    _cc->setCursor(saved);
-    return reg;
-  }
-
-  X86Compiler* _cc;
-  CBNode* _injectTarget;
-  std::vector<Slot> _slots;
-};
-
-// Signature of the generated function.
-typedef void (*Func)(uint16_t*);
-
-int main(int argc, char* argv[]) {
-  JitRuntime rt;                          // Runtime specialized for JIT code execution.
-
-  FileLogger logger(stdout);
-
-  CodeHolder code;                        // Holds code and relocation information.
-  code.init(rt.getCodeInfo());            // Initialize to the same arch as JIT runtime.
-  code.setLogger(&logger);
-
-  X86Compiler cc(&code);                  // Create and attach X86Compiler to `code`.
-  cc.addFunc(
-    FuncSignature1<void, uint16_t*>());   // Create a function that accepts `uint16_t[]'.
-
-  X86Gp p = cc.newIntPtr("p");            // Create and Assign the function argument `p`.
-  cc.setArg(0, p);
-
-  XmmConstInjector injector(&cc);         // The injector will inject the code |here|.
-
-  X86Xmm x = cc.newXmm("x");
-  cc.movups(x, x86::ptr(p));              // Load 16 bytes from `[p]` to `x`.
-
-  // Now use injector to add constants to the constant pool and to inject their loads.
-  Data128 data0 = Data128::fromU16(0x80);
-  Data128 data1 = Data128::fromU16(0x13);
-
-  cc.paddw(x, injector.xmmOf(data0));     // x.u16 = x.u16 + 0x80.
-  cc.pmullw(x, injector.xmmOf(data1));    // x.u16 = x.u16 * 0x13.
-  cc.movups(x86::ptr(p), x);              // Write back to `[p]`.
-
-  cc.endFunc();                           // End of the function body.
-  cc.finalize();                          // Translate and assemble the whole `cc` content.
-  // ----> X86Compiler is no longer needed from here and can be destroyed <----
-
-  Func func;
-  Error err = rt.add(&func, &code);       // Add the generated code to the runtime.
-  if (err) return 1;                      // Handle a possible error returned by AsmJit.
-  // ----> CodeHolder is no longer needed from here and can be destroyed <----
-
-  // Test the generated function
-  uint16_t vec[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-  func(vec);
-
-  for (uint32_t i = 0; i < 8; i++)
-    printf("%u ", vec[i]);
-  printf("\n");
-
-  rt.release(func);                       // RAII, but let's make it explicit.
-  return 0;
-}
-```
-
-The code generated would look similar to:
-
-```x86asm
-L0:
-movaps xmm0, oword [L2]                 ; movaps const0, oword [L2]
-movaps xmm1, oword [L2+16]              ; movaps const1, oword [L2+16]
-movups xmm2, [rdi]                      ; movups x, [p]
-paddw xmm2, xmm0                        ; paddw x, const0
-pmullw xmm2, xmm1                       ; pmullw x, const1
-movups [rdi], xmm2                      ; movups [p], x
-L1:
-ret
-.align 16
-L2:
-.data 80008000800080008000800080008000
-.data 13001300130013001300130013001300
-```
-
-There are many other applications of code injection, usually it's used to lazy-add some initialization code and such, but the application is practically unlimited.
-
 Advanced Features
 -----------------
 
@@ -1712,6 +1579,15 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
+```
+
+### Code Injection
+
+**CodeBuilder** and **CodeCompiler** emitters store their nodes in a double-linked list, which makes it easy to manipulate during the code generation or after it. Each node is always emitted next to the current **cursor** and the cursor is changed to that newly emitted node. Cursor can be explicitly retrieved and assigned by **getCursor()** and **setCursor()**, respectively.
+
+The following example shows how to inject code at the beginning of the function by implementing an **XmmConstInjector** helper class.
+
+```c++
 ```
 
 ### TODO

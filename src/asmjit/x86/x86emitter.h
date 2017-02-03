@@ -5022,8 +5022,8 @@ struct X86EmitterImplicitT : public X86EmitterExplicitT<This> {
 
 //! X86/X64 emitter.
 //!
-//! NOTE: This class cannot be created, you can only cast to it and use it as
-//! emitter that emits to either X86Assembler, X86Builder, or X86Compiler (use
+//! NOTE: This class cannot be instantiated, you can only cast to it and use it
+//! as emitter that emits to either X86Assembler, X86Builder, or X86Compiler (use
 //! with caution with X86Compiler as it expects virtual registers to be used).
 class X86Emitter
   : public CodeEmitter,

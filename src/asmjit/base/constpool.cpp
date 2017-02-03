@@ -11,8 +11,6 @@
 #include "../base/constpool.h"
 #include "../base/utils.h"
 
-#include <algorithm>
-
 // [Api-Begin]
 #include "../asmjit_apibegin.h"
 

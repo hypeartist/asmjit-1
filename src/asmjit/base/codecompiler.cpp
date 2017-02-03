@@ -16,9 +16,8 @@
 #include "../base/codecompiler.h"
 #include "../base/cpuinfo.h"
 #include "../base/logging.h"
-#include "../base/regalloc_p.h"
+#include "../base/rapass_p.h"
 #include "../base/utils.h"
-#include <stdarg.h>
 
 // [Api-Begin]
 #include "../asmjit_apibegin.h"
@@ -77,7 +76,6 @@ Error CodeCompiler::onAttach(CodeHolder* code) noexcept {
 
 Error CodeCompiler::onDetach(CodeHolder* code) noexcept {
   _func = nullptr;
-
   _localConstPool = nullptr;
   _globalConstPool = nullptr;
 
@@ -85,17 +83,6 @@ Error CodeCompiler::onDetach(CodeHolder* code) noexcept {
   _vRegZone.reset(false);
 
   return Base::onDetach(code);
-}
-
-// ============================================================================
-// [asmjit::CodeCompiler - Node-Factory]
-// ============================================================================
-
-CCHint* CodeCompiler::newHintNode(Reg& r, uint32_t hint, uint32_t value) noexcept {
-  if (!r.isVirtReg()) return nullptr;
-
-  VirtReg* vr = getVirtReg(r);
-  return newNodeT<CCHint>(vr, hint, value);
 }
 
 // ============================================================================
@@ -201,18 +188,22 @@ CBSentinel* CodeCompiler::endFunc() {
 // ============================================================================
 
 CCFuncRet* CodeCompiler::newRet(const Operand_& o0, const Operand_& o1) noexcept {
-  CCFuncRet* node = newNodeT<CCFuncRet>(o0, o1);
+  CCFuncRet* node = newNodeT<CCFuncRet>();
   if (!node) {
     setLastError(DebugUtils::errored(kErrorNoHeapMemory));
     return nullptr;
   }
+
+  node->_ret[0].copyFrom(o0);
+  node->_ret[1].copyFrom(o1);
+
   return node;
 }
 
 CCFuncRet* CodeCompiler::addRet(const Operand_& o0, const Operand_& o1) noexcept {
   CCFuncRet* node = newRet(o0, o1);
   if (!node) return nullptr;
-  return static_cast<CCFuncRet*>(addNode(node));
+  return addNode(node)->as<CCFuncRet>();
 }
 
 // ============================================================================
@@ -220,42 +211,43 @@ CCFuncRet* CodeCompiler::addRet(const Operand_& o0, const Operand_& o1) noexcept
 // ============================================================================
 
 CCFuncCall* CodeCompiler::newCall(uint32_t instId, const Operand_& o0, const FuncSignature& sign) noexcept {
-  Error err;
-  uint32_t nArgs;
+  CCFuncCall* node = _cbHeap.allocT<CCFuncCall>(sizeof(CCFuncCall));
+  if (ASMJIT_UNLIKELY(!node)) {
+    setLastError(DebugUtils::errored(kErrorNoHeapMemory));
+    return nullptr;
+  }
 
-  CCFuncCall* node = _cbHeap.allocT<CCFuncCall>(sizeof(CCFuncCall) + sizeof(Operand));
-  Operand* opArray = reinterpret_cast<Operand*>(reinterpret_cast<uint8_t*>(node) + sizeof(CCFuncCall));
+  new(node) CCFuncCall(this, instId, 0);
+  node->setOpCount(1);
+  node->setOp(0, o0);
+  node->resetOp(1);
+  node->resetOp(2);
+  node->resetOp(3);
 
-  if (ASMJIT_UNLIKELY(!node))
-    goto _NoMemory;
-
-  opArray[0].copyFrom(o0);
-  new (node) CCFuncCall(this, instId, 0, opArray, 1);
-
-  if ((err = node->getDetail().init(sign)) != kErrorOk) {
+  Error err = node->getDetail().init(sign);
+  if (ASMJIT_UNLIKELY(err != kErrorOk)) {
     setLastError(err);
     return nullptr;
   }
 
   // If there are no arguments skip the allocation.
-  if ((nArgs = sign.getArgCount()) == 0)
-    return node;
+  uint32_t nArgs = sign.getArgCount();
+  if (!nArgs) return node;
 
   node->_args = static_cast<Operand*>(_cbHeap.alloc(nArgs * sizeof(Operand)));
-  if (!node->_args) goto _NoMemory;
+  if (!node->_args) {
+    setLastError(DebugUtils::errored(kErrorNoHeapMemory));
+    return nullptr;
+  }
 
   ::memset(node->_args, 0, nArgs * sizeof(Operand));
   return node;
-
-_NoMemory:
-  setLastError(DebugUtils::errored(kErrorNoHeapMemory));
-  return nullptr;
 }
 
 CCFuncCall* CodeCompiler::addCall(uint32_t instId, const Operand_& o0, const FuncSignature& sign) noexcept {
   CCFuncCall* node = newCall(instId, o0, sign);
   if (!node) return nullptr;
-  return static_cast<CCFuncCall*>(addNode(node));
+  return addNode(node)->as<CCFuncCall>();
 }
 
 // ============================================================================
@@ -271,23 +263,9 @@ Error CodeCompiler::setArg(uint32_t argIndex, const Reg& r) {
   if (!isVirtRegValid(r))
     return setLastError(DebugUtils::errored(kErrorInvalidVirtId));
 
-  VirtReg* vr = getVirtReg(r);
-  func->setArg(argIndex, vr);
+  VirtReg* vReg = getVirtReg(r);
+  func->setArg(argIndex, vReg);
 
-  return kErrorOk;
-}
-
-// ============================================================================
-// [asmjit::CodeCompiler - Hint]
-// ============================================================================
-
-Error CodeCompiler::_hint(Reg& r, uint32_t hint, uint32_t value) {
-  if (!r.isVirtReg()) return kErrorOk;
-
-  CCHint* node = newHintNode(r, hint, value);
-  if (!node) return setLastError(DebugUtils::errored(kErrorNoHeapMemory));
-
-  addNode(node);
   return kErrorOk;
 }
 
@@ -297,34 +275,33 @@ Error CodeCompiler::_hint(Reg& r, uint32_t hint, uint32_t value) {
 
 VirtReg* CodeCompiler::newVirtReg(uint32_t typeId, uint32_t signature, const char* name) noexcept {
   size_t index = _vRegArray.getLength();
-  if (ASMJIT_UNLIKELY(index > Operand::kPackedIdCount))
+  if (ASMJIT_UNLIKELY(index >= static_cast<unsigned int>(Operand::kPackedIdCount)))
     return nullptr;
 
-  VirtReg* vreg;
-  if (_vRegArray.willGrow(&_cbHeap, 1) != kErrorOk || !(vreg = _vRegZone.allocZeroedT<VirtReg>()))
+  VirtReg* vReg;
+  if (_vRegArray.willGrow(&_cbHeap) != kErrorOk || !(vReg = _vRegZone.allocZeroedT<VirtReg>()))
     return nullptr;
 
-  vreg->_id = Operand::packId(static_cast<uint32_t>(index));
-  vreg->_regInfo._signature = signature;
-  vreg->_name = noName;
+  vReg->_id = Operand::packId(static_cast<uint32_t>(index));
+  vReg->_regInfo._signature = signature;
+  vReg->_name = noName;
 
 #if !defined(ASMJIT_DISABLE_LOGGING)
   if (name && name[0] != '\0')
-    vreg->_name = static_cast<char*>(_cbDataZone.dup(name, ::strlen(name), true));
+    vReg->_name = static_cast<char*>(_cbDataZone.dup(name, ::strlen(name), true));
 #endif // !ASMJIT_DISABLE_LOGGING
 
-  vreg->_size = TypeId::sizeOf(typeId);
-  vreg->_typeId = typeId;
-  vreg->_alignment = static_cast<uint8_t>(std::min<uint32_t>(vreg->_size, 64));
-  vreg->_priority = 10;
+  vReg->_size = TypeId::sizeOf(typeId);
+  vReg->_typeId = typeId;
+  vReg->_alignment = static_cast<uint8_t>(std::min<uint32_t>(vReg->_size, 64));
+  vReg->_priority = 10;
 
   // The following are only used by `RAPass`.
-  vreg->_raId = kInvalidValue;
-  vreg->_state = VirtReg::kStateNone;
-  vreg->_physId = Globals::kInvalidRegId;
+  vReg->_state = VirtReg::kStateNone;
+  vReg->_physId = Globals::kInvalidRegId;
 
-  _vRegArray.appendUnsafe(vreg);
-  return vreg;
+  _vRegArray.appendUnsafe(vReg);
+  return vReg;
 }
 
 Error CodeCompiler::_newReg(Reg& out, uint32_t typeId, const char* name) {
@@ -451,7 +428,7 @@ Error CodeCompiler::_newStack(Mem& out, uint32_t size, uint32_t alignment, const
   vReg->_alignment = static_cast<uint8_t>(alignment);
 
   // Set the memory operand to GPD/GPQ and its id to VirtReg.
-  out = Mem(Init, _nativeGpReg.getType(), vReg->getId(), Reg::kRegNone, kInvalidValue, 0, 0, Mem::kSignatureMemRegHomeFlag);
+  out = Mem(Init, _nativeGpReg.getType(), vReg->getId(), Reg::kRegNone, 0, 0, 0, Mem::kSignatureMemRegHomeFlag);
   return kErrorOk;
 }
 
@@ -477,79 +454,20 @@ Error CodeCompiler::_newConst(Mem& out, uint32_t scope, const void* data, size_t
     Label::kLabelTag,             // Base type.
     pool->getId(),                // Base id.
     0,                            // Index type.
-    kInvalidValue,                // Index id.
+    0,                            // Index id.
     static_cast<int32_t>(off),    // Offset.
     static_cast<uint32_t>(size),  // Size.
     0);                           // Flags.
   return kErrorOk;
 }
 
-Error CodeCompiler::alloc(Reg& reg) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintAlloc, kInvalidValue);
-}
-
-Error CodeCompiler::alloc(Reg& reg, uint32_t physId) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintAlloc, physId);
-}
-
-Error CodeCompiler::alloc(Reg& reg, const Reg& physReg) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintAlloc, physReg.getId());
-}
-
-Error CodeCompiler::save(Reg& reg) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintSave, kInvalidValue);
-}
-
-Error CodeCompiler::spill(Reg& reg) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintSpill, kInvalidValue);
-}
-
-Error CodeCompiler::unuse(Reg& reg) {
-  if (!reg.isVirtReg()) return kErrorOk;
-  return _hint(reg, CCHint::kHintUnuse, kInvalidValue);
-}
-
-uint32_t CodeCompiler::getPriority(Reg& reg) const {
-  if (!reg.isVirtReg()) return 0;
-  return getVirtRegById(reg.getId())->getPriority();
-}
-
-void CodeCompiler::setPriority(Reg& reg, uint32_t priority) {
-  if (!reg.isVirtReg()) return;
-  if (priority > 255) priority = 255;
-
-  VirtReg* vreg = getVirtRegById(reg.getId());
-  if (vreg) vreg->_priority = static_cast<uint8_t>(priority);
-}
-
-bool CodeCompiler::getSaveOnUnuse(Reg& reg) const {
-  if (!reg.isVirtReg()) return false;
-
-  VirtReg* vreg = getVirtRegById(reg.getId());
-  return static_cast<bool>(vreg->_saveOnUnuse);
-}
-
-void CodeCompiler::setSaveOnUnuse(Reg& reg, bool value) {
-  if (!reg.isVirtReg()) return;
-
-  VirtReg* vreg = getVirtRegById(reg.getId());
-  if (!vreg) return;
-
-  vreg->_saveOnUnuse = value;
-}
-
 void CodeCompiler::rename(Reg& reg, const char* fmt, ...) {
   if (!reg.isVirtReg()) return;
 
-  VirtReg* vreg = getVirtRegById(reg.getId());
-  if (!vreg) return;
+  VirtReg* vReg = getVirtRegById(reg.getId());
+  if (!vReg) return;
 
-  vreg->_name = noName;
+  vReg->_name = noName;
   if (fmt && fmt[0] != '\0') {
     char buf[64];
 
@@ -559,9 +477,40 @@ void CodeCompiler::rename(Reg& reg, const char* fmt, ...) {
     vsnprintf(buf, ASMJIT_ARRAY_SIZE(buf), fmt, ap);
     buf[ASMJIT_ARRAY_SIZE(buf) - 1] = '\0';
 
-    vreg->_name = static_cast<char*>(_cbDataZone.dup(buf, ::strlen(buf), true));
+    vReg->_name = static_cast<char*>(_cbDataZone.dup(buf, ::strlen(buf), true));
     va_end(ap);
   }
+}
+
+// ============================================================================
+// [asmjit::CCFuncPass - Construction / Destruction]
+// ============================================================================
+
+CCFuncPass::CCFuncPass(const char* name) noexcept
+  : CBPass(name) {}
+
+// ============================================================================
+// [asmjit::CCFuncPass - Run]
+// ============================================================================
+
+Error CCFuncPass::run(Zone* zone) noexcept {
+  CBNode* node = cb()->getFirstNode();
+  if (!node) return kErrorOk;
+
+  do {
+    if (node->getType() == CBNode::kNodeFunc) {
+      CCFunc* func = node->as<CCFunc>();
+      node = func->getEnd();
+      ASMJIT_PROPAGATE(runOnFunction(zone, func));
+    }
+
+    // Find a function by skipping all nodes that are not `kNodeFunc`.
+    do {
+      node = node->getNext();
+    } while (node && node->getType() != CBNode::kNodeFunc);
+  } while (node);
+
+  return kErrorOk;
 }
 
 } // asmjit namespace

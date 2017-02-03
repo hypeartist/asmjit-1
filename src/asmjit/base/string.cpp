@@ -305,7 +305,7 @@ Error StringBuilder::_opVFormat(uint32_t op, const char* fmt, va_list ap) noexce
 }
 
 Error StringBuilder::setFormat(const char* fmt, ...) noexcept {
-  bool result;
+  Error result;
 
   va_list ap;
   va_start(ap, fmt);
@@ -316,7 +316,7 @@ Error StringBuilder::setFormat(const char* fmt, ...) noexcept {
 }
 
 Error StringBuilder::appendFormat(const char* fmt, ...) noexcept {
-  bool result;
+  Error result;
 
   va_list ap;
   va_start(ap, fmt);

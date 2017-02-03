@@ -26,11 +26,11 @@ struct OpcodeDumpInfo {
 
 static const char* archTypeToString(uint32_t archType) {
   switch (archType) {
-    case ArchInfo::kTypeNone : return "None";
-    case ArchInfo::kTypeX86  : return "X86";
-    case ArchInfo::kTypeX64  : return "X64";
-    case ArchInfo::kTypeA32  : return "A32";
-    case ArchInfo::kTypeA64  : return "A64";
+    case ArchInfo::kTypeNone: return "None";
+    case ArchInfo::kTypeX86 : return "X86";
+    case ArchInfo::kTypeX64 : return "X64";
+    case ArchInfo::kTypeA32 : return "A32";
+    case ArchInfo::kTypeA64 : return "A64";
 
     default:
       return "<unknown>";
@@ -76,7 +76,7 @@ int main(int argc, char* argv[]) {
 #endif // ASMJIT_DISABLE_LOGGING
 
     X86Assembler a(&code);
-    asmtest::generateOpcodes(a, info.useRex1, info.useRex2);
+    asmtest::generateOpcodes(a.asEmitter(), info.useRex1, info.useRex2);
 
     // If this is the host architecture the code generated can be executed
     // for debugging purposes (the first instruction is ret anyway).

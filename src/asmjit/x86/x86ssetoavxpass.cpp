@@ -22,73 +22,132 @@
 namespace asmjit {
 
 // ============================================================================
-// [asmjit::X86SseToAvxPass]
+// [asmjit::X86SseToAvxPass - Construction / Destruction]
 // ============================================================================
 
-class X86SseToAvxPass : public CBPass {
-  ASMJIT_NONCOPYABLE(X86SseToAvxPass)
-public:
-  X86SseToAvxPass() noexcept : CBPass("SseToAvx") {}
-  virtual Error process(Zone* zone) noexcept override;
+X86SseToAvxPass::X86SseToAvxPass() noexcept
+  : CBPass("X86SseToAvxPass"),
+    _translated(false) {}
 
-  enum ProbeMask {
-    kProbeMmx  = 1U << X86Reg::kRegMm,    //!< Instruction uses MMX registers.
-    kProbeXmm  = 1U << X86Reg::kRegXmm    //!< Instruction uses XMM registers.
-  };
+// ============================================================================
+// [asmjit::X86SseToAvxPass - Run]
+// ============================================================================
 
-  static ASMJIT_INLINE uint32_t probeRegs(const Operand* opArray, uint32_t opCount) noexcept {
-    uint32_t mask = 0;
-    for (uint32_t i = 0; i < opCount; i++) {
-      const Operand& op = opArray[i];
-      if (!op.isReg()) continue;
-      mask |= Utils::mask(static_cast<const Reg&>(op).getType());
-    }
-    return mask;
-  }
-};
+Error X86SseToAvxPass::run(Zone* zone) noexcept {
+  ZoneHeap heap(zone);
+  ZoneStack<CBInst*> insts;
+  ASMJIT_PROPAGATE(insts.init(&heap));
 
-Error X86SseToAvxPass::process(Zone* zone) noexcept {
-  ASMJIT_UNUSED(zone);
-
+  // Probe loop. Let's add all nodes that can be converted to `insts` list and
+  // let's fail if nodes are not consistent or there is node that cannot be
+  // translated to AVX (uses MMX regs for example, or uses SSE4A instruction).
   CBNode* node_ = cb()->getFirstNode();
+
   while (node_) {
     if (node_->getType() == CBNode::kNodeInst) {
-      CBInst* node = static_cast<CBInst*>(node_);
-      uint32_t instId = node->getInstId();
+      CBInst* inst = node_->as<CBInst>();
+      uint32_t instId = inst->getInstId();
 
-      // Skip invalid and high-level instructions; we don't care here.
+      // Skip invalid and high-level instructions; we don't care about them here.
       if (!X86Inst::isDefinedId(instId)) continue;
 
       // Skip non-SSE instructions.
       const X86Inst& instData = X86Inst::getInst(instId);
       if (!instData.isSseFamily()) continue;
 
+      uint32_t opCount = inst->getOpCount();
+      uint32_t regTypes = probeRegs(inst->getOpArray(), opCount);
+
       // Skip instructions that don't use XMM registers.
-      uint32_t regs = probeRegs(node->getOpArray(), node->getOpCount());
-      if (!(regs & kProbeXmm)) continue;
+      if (!(regTypes & kProbeXmm)) continue;
 
-      if (!(regs & kProbeMmx)) {
+      if (!(regTypes & kProbeMmx)) {
         // This is the common case.
+        const X86Inst::SseData& sseData = instData.getSseData();
+        switch (sseData.avxConvMode) {
+          case X86Inst::SseData::kAvxConvNone:
+            // CANNOT TRANSLATE.
+            return kErrorOk;
 
-        // TODO: Wait for some fixes in CBInst first.
+          case X86Inst::SseData::kAvxConvMove:
+            break;
+
+          case X86Inst::SseData::kAvxConvMoveIfMem:
+          case X86Inst::SseData::kAvxConvExtend:
+            // CANNOT TRANSLATE if the instruction is malformed.
+            if (ASMJIT_UNLIKELY(opCount < 1 || opCount > 3)) return kErrorOk;
+            break;
+
+          case X86Inst::SseData::kAvxConvBlend:
+            // CANNOT TRANSLATE if the instruction is malformed.
+            if (ASMJIT_UNLIKELY(opCount < 2 || opCount > 3)) return kErrorOk;
+            break;
+        }
       }
       else {
         // If this instruction uses MMX register it means that it's a conversion
-        // between MMX and XMM (and vice versa), this cannot be directly translated
-        // to AVX as there is no such AVX instruction that works with MMX registers.
-
-        // TODO: Needs a mem-slot to be able to do this.
+        // between MMX and XMM, this cannot be directly translated to AVX as
+        // there is no such AVX instruction that works with MMX registers.
+        return kErrorOk;
       }
 
+      ASMJIT_PROPAGATE(insts.append(inst));
     }
 
     node_ = node_->getNext();
   }
 
+  // Second loop - patch all nodes we added to `insts` to use AVX instead of SSE.
+  // At this moment we know that patching should not cause any performance issues
+  // and all instructions added to `insts` are patchable.
+  while (!insts.isEmpty()) {
+    CBInst* inst = insts.popFirst();
+
+    uint32_t instId = inst->getInstId();
+    ASMJIT_ASSERT(X86Inst::isDefinedId(instId));
+
+    const X86Inst& instData = X86Inst::getInst(instId);
+    ASMJIT_ASSERT(instData.isSseFamily());
+
+    uint32_t i;
+    uint32_t opCount = inst->getOpCount();
+
+    const X86Inst::SseData& sseData = instData.getSseData();
+    switch (sseData.avxConvMode) {
+      case X86Inst::SseData::kAvxConvNone:
+        // That should not happen.
+        break;
+
+      case X86Inst::SseData::kAvxConvMove:
+        // Nothing to patch...
+        break;
+
+      case X86Inst::SseData::kAvxConvMoveIfMem:
+        if (inst->hasMemOp())
+          break;
+        goto Extend;
+
+      case X86Inst::SseData::kAvxConvBlend:
+        // Translate [xmmA, xmmB/m128, <xmm0>] to [xmmA, xmmA, xmmB/m128, xmm0].
+        if (opCount == 2)
+          inst->_opArray[opCount++] = x86::xmm0;
+        goto Extend;
+
+      case X86Inst::SseData::kAvxConvExtend:
+Extend:
+        for (i = opCount; i > 0; i--)
+          inst->setOp(i, inst->getOp(i - 1));
+        inst->setOpCount(opCount + 1);
+        break;
+    }
+
+    instId = static_cast<uint32_t>(static_cast<int32_t>(instId) + sseData.avxConvDelta);
+    inst->setInstId(instId);
+  }
+
+  _translated = true;
   return kErrorOk;
 }
-
-Error X86SseToAvxPassInit::add(CodeBuilder* cb) noexcept { return cb->addPassT<X86SseToAvxPass>(); }
 
 } // asmjit namespace
 

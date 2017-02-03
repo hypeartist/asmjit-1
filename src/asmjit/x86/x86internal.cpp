@@ -47,8 +47,6 @@ public:
   typedef FuncDetail::Value SrcArg;
   typedef FuncArgsMapper::Value DstArg;
 
-  enum { kMaxVRegKinds = Globals::kMaxVRegKinds };
-
   struct WorkData {
     uint32_t archRegs;                   //!< Architecture provided and allocable regs.
     uint32_t workRegs;                   //!< Registers that can be used by shuffler.
@@ -73,7 +71,7 @@ public:
   // [Members]
   // --------------------------------------------------------------------------
 
-  WorkData _workData[kMaxVRegKinds];
+  WorkData _workData[Globals::kMaxVRegKinds];
   bool _hasStackArgs;
   bool _hasRegSwaps;
 };
@@ -85,8 +83,8 @@ X86FuncArgsContext::X86FuncArgsContext() noexcept {
 }
 
 ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::initWorkData(const FuncArgsMapper& args, const uint32_t* dirtyRegs, bool preservedFP) noexcept {
-  // This code has to be updated if this changes.
-  ASMJIT_ASSERT(kMaxVRegKinds == 4);
+  // The code has to be updated if this changes.
+  ASMJIT_ASSERT(Globals::kMaxVRegKinds == 4);
 
   uint32_t i;
   const FuncDetail& func = *args.getFuncDetail();
@@ -104,7 +102,7 @@ ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::initWorkData(const FuncArgsMapper& a
     _workData[X86Reg::kKindGp].archRegs &= ~Utils::mask(X86Gp::kIdBp);
 
   // Initialize WorkData::workRegs.
-  for (i = 0; i < kMaxVRegKinds; i++)
+  for (i = 0; i < Globals::kMaxVRegKinds; i++)
     _workData[i].workRegs = _workData[i].archRegs & (dirtyRegs[i] | ~func.getCallConv().getPreservedRegs(i));
 
   // Build WorkData.
@@ -121,7 +119,7 @@ ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::initWorkData(const FuncArgsMapper& a
       return DebugUtils::errored(kErrorInvalidRegType);
 
     uint32_t dstRegKind = X86Reg::kindOf(dstRegType);
-    if (ASMJIT_UNLIKELY(dstRegKind >= kMaxVRegKinds))
+    if (ASMJIT_UNLIKELY(dstRegKind >= Globals::kMaxVRegKinds))
       return DebugUtils::errored(kErrorInvalidState);
 
     WorkData& dstData = _workData[dstRegKind];
@@ -156,7 +154,7 @@ ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::initWorkData(const FuncArgsMapper& a
         dstData.srcRegs |= srcRegMask;
       }
       else {
-        if (ASMJIT_UNLIKELY(srcRegKind >= kMaxVRegKinds))
+        if (ASMJIT_UNLIKELY(srcRegKind >= Globals::kMaxVRegKinds))
           return DebugUtils::errored(kErrorInvalidState);
 
         WorkData& srcData = _workData[srcRegKind];
@@ -176,7 +174,7 @@ ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::initWorkData(const FuncArgsMapper& a
 }
 
 ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::markDstRegsDirty(FuncFrameInfo& ffi) noexcept {
-  for (uint32_t i = 0; i < kMaxVRegKinds; i++) {
+  for (uint32_t i = 0; i < Globals::kMaxVRegKinds; i++) {
     WorkData& wd = _workData[i];
     uint32_t regs = wd.usedRegs | wd.dstRegs;
 
@@ -194,7 +192,7 @@ ASMJIT_FAVOR_SIZE Error X86FuncArgsContext::markRegsForSwaps(FuncFrameInfo& ffi)
   // If some registers require swapping then select one dirty register that
   // can be used as a temporary. We can do it also without it (by using xors),
   // but using temporary is always safer and also faster approach.
-  for (uint32_t i = 0; i < kMaxVRegKinds; i++) {
+  for (uint32_t i = 0; i < Globals::kMaxVRegKinds; i++) {
     // Skip all register kinds where swapping is natively supported (GP regs).
     if (i == X86Reg::kKindGp) continue;
 
@@ -664,7 +662,6 @@ ASMJIT_FAVOR_SIZE Error X86Internal::initFrameLayout(FuncFrameLayout& layout, co
 ASMJIT_FAVOR_SIZE Error X86Internal::argsToFrameInfo(const FuncArgsMapper& args, FuncFrameInfo& ffi) noexcept {
   X86FuncArgsContext ctx;
   ASMJIT_PROPAGATE(ctx.initWorkData(args, ffi._dirtyRegs, ffi.hasPreservedFP()));
-
   ASMJIT_PROPAGATE(ctx.markDstRegsDirty(ffi));
   ASMJIT_PROPAGATE(ctx.markRegsForSwaps(ffi));
   ASMJIT_PROPAGATE(ctx.markStackArgsReg(ffi));
@@ -790,8 +787,7 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitArgMove(X86Emitter* emitter,
 
   uint32_t dstSize = TypeId::sizeOf(dstTypeId);
   uint32_t srcSize = TypeId::sizeOf(srcTypeId);
-
-  int32_t instId = Globals::kInvalidInstId;
+  uint32_t instId = Globals::kInvalidInstId;
 
   // Not a real loop, just 'break' is nicer than 'goto'.
   for (;;) {
@@ -1144,7 +1140,6 @@ ASMJIT_FAVOR_SIZE Error X86Internal::allocArgs(X86Emitter* emitter, const FuncFr
   typedef X86FuncArgsContext::SrcArg SrcArg;
   typedef X86FuncArgsContext::DstArg DstArg;
   typedef X86FuncArgsContext::WorkData WorkData;
-  enum { kMaxVRegKinds = Globals::kMaxVRegKinds };
 
   uint32_t i;
   const FuncDetail& func = *args.getFuncDetail();
@@ -1161,8 +1156,8 @@ ASMJIT_FAVOR_SIZE Error X86Internal::allocArgs(X86Emitter* emitter, const FuncFr
   // Free registers are changed during shuffling - when an argument is moved
   // to the final register then the register itself is removed from freeRegs
   // (it can't be altered anymore during shuffling).
-  uint32_t freeRegs[kMaxVRegKinds];
-  for (i = 0; i < kMaxVRegKinds; i++)
+  uint32_t freeRegs[Globals::kMaxVRegKinds];
+  for (i = 0; i < Globals::kMaxVRegKinds; i++)
     freeRegs[i] = ctx._workData[i].workRegs & ~ctx._workData[i].srcRegs;
 
   // This is an iterative process that runs until there is a work to do. When
@@ -1174,7 +1169,7 @@ ASMJIT_FAVOR_SIZE Error X86Internal::allocArgs(X86Emitter* emitter, const FuncFr
     bool hasWork = false; // Do we have a work to do?
     bool didWork = false; // If we did something...
 
-    uint32_t dstRegKind = kMaxVRegKinds;
+    uint32_t dstRegKind = Globals::kMaxVRegKinds;
     do {
       WorkData& wd = ctx._workData[--dstRegKind];
       if (wd.numOps > wd.numStackArgs) {
@@ -1266,7 +1261,7 @@ ASMJIT_FAVOR_SIZE Error X86Internal::allocArgs(X86Emitter* emitter, const FuncFr
     // Base address of all arguments passed by stack.
     X86Mem saBase = x86::ptr(emitter->gpz(layout.getStackArgsRegId()), layout.getStackArgsOffset());
 
-    uint32_t dstRegKind = kMaxVRegKinds;
+    uint32_t dstRegKind = Globals::kMaxVRegKinds;
     do {
       WorkData& wd = ctx._workData[--dstRegKind];
       if (wd.numStackArgs) {

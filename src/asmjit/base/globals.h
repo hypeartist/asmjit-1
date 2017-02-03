@@ -23,8 +23,6 @@ namespace asmjit {
 // [asmjit::Globals]
 // ============================================================================
 
-enum { kInvalidValue = 0xFFFFFFFFU };
-
 //! AsmJit globals.
 namespace Globals {
 

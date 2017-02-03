@@ -14,8 +14,9 @@ set(ASMJIT_DIR        "${CMAKE_CURRENT_LIST_DIR}" CACHE PATH "Location of 'asmji
 
 set(ASMJIT_EMBED      FALSE CACHE BOOLEAN "Embed 'asmjit' library (no targets)")
 set(ASMJIT_STATIC     FALSE CACHE BOOLEAN "Build 'asmjit' library as static")
-set(ASMJIT_BUILD_ARM  FALSE CACHE BOOLEAN "Build ARM32/ARM64 backends")
 set(ASMJIT_BUILD_X86  FALSE CACHE BOOLEAN "Build X86/X64 backends")
+set(ASMJIT_BUILD_ARM  FALSE CACHE BOOLEAN "Build ARM/Thumb backends")
+set(ASMJIT_BUILD_A64  FALSE CACHE BOOLEAN "Build ARM64 (AArch64) backend")
 set(ASMJIT_BUILD_TEST FALSE CACHE BOOLEAN "Build 'asmjit_test' applications")
 
 # =============================================================================
@@ -50,10 +51,6 @@ if("${CMAKE_CXX_COMPILER_ID}" MATCHES "^(GNU|Clang)$")
     "-fmerge-all-constants")
 endif()
 
-if(ASMJIT_TRACE)
-  list(APPEND ASMJIT_PRIVATE_CFLAGS "${CXX_DEFINE}ASMJIT_TRACE")
-endif()
-
 if(WIN32)
   list(APPEND ASMJIT_PRIVATE_CFLAGS "${CXX_DEFINE}_UNICODE")
 else()
@@ -70,8 +67,9 @@ if(NOT ASMJIT_EMBED)
 endif()
 
 foreach(BUILD_OPTION
-    ASMJIT_BUILD_ARM
     ASMJIT_BUILD_X86
+    ASMJIT_BUILD_ARM
+    ASMJIT_BUILD_A64
     ASMJIT_DISABLE_BUILDER
     ASMJIT_DISABLE_COMPILER
     ASMJIT_DISABLE_TEXT
@@ -124,13 +122,13 @@ cxx_add_source(asmjit ASMJIT_SRC asmjit/base
   globals.h
   logging.cpp
   logging.h
-  misc_p.h
   operand.cpp
   operand.h
   osutils.cpp
   osutils.h
-  regalloc.cpp
-  regalloc_p.h
+  rabuilders_p.h
+  rapass.cpp
+  rapass_p.h
   runtime.cpp
   runtime.h
   simdtypes.h
@@ -144,17 +142,27 @@ cxx_add_source(asmjit ASMJIT_SRC asmjit/base
   zone.h
 )
 
-if(0)
 cxx_add_source(asmjit ASMJIT_SRC asmjit/arm
   armassembler.cpp
   armassembler.h
+  armbuilder.cpp
+  armbuilder.h
+  armcompiler.cpp
+  armcompiler.h
+  armemitter.h
+  armglobals.h
+  arminternal.cpp
+  arminternal_p.h
   arminst.cpp
   arminst.h
+  armlogging.cpp
+  armlogging_p.h
   armoperand.cpp
   armoperand_regs.cpp
   armoperand.h
+  armrapass.cpp
+  armrapass_p.h
 )
-endif()
 
 cxx_add_source(asmjit ASMJIT_SRC asmjit/x86
   x86assembler.cpp
@@ -171,12 +179,11 @@ cxx_add_source(asmjit ASMJIT_SRC asmjit/x86
   x86inst.h
   x86logging.cpp
   x86logging_p.h
-  x86misc.h
   x86operand.cpp
   x86operand_regs.cpp
   x86operand.h
-  x86regalloc.cpp
-  x86regalloc_p.h
+  x86rapass.cpp
+  x86rapass_p.h
   x86ssetoavxpass.cpp
   x86ssetoavxpass_p.h
 )

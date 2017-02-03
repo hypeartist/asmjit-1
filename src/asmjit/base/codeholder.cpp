@@ -422,7 +422,7 @@ Error CodeHolder::newLabelId(uint32_t& idOut) noexcept {
   idOut = 0;
 
   size_t index = _labels.getLength();
-  if (ASMJIT_LIKELY(index >= Operand::kPackedIdCount))
+  if (ASMJIT_UNLIKELY(index >= static_cast<unsigned int>(Operand::kPackedIdCount)))
     return DebugUtils::errored(kErrorLabelIndexOverflow);
 
   ASMJIT_PROPAGATE(_labels.willGrow(&_baseHeap));
@@ -480,7 +480,7 @@ Error CodeHolder::newNamedLabelId(uint32_t& idOut, const char* name, size_t name
   Error err = kErrorOk;
   size_t index = _labels.getLength();
 
-  if (ASMJIT_UNLIKELY(index >= Operand::kPackedIdCount))
+  if (ASMJIT_UNLIKELY(index >= static_cast<unsigned int>(Operand::kPackedIdCount)))
     return DebugUtils::errored(kErrorLabelIndexOverflow);
 
   ASMJIT_PROPAGATE(_labels.willGrow(&_baseHeap));

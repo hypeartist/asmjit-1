@@ -30,9 +30,11 @@ namespace asmjit {
 // ============================================================================
 
 struct VirtReg;
-struct TiedReg;
+
 struct RAState;
-struct RACell;
+struct RAStackSlot;
+struct TiedReg;
+class WorkReg;
 
 //! \addtogroup asmjit_base
 //! \{
@@ -139,17 +141,27 @@ struct VirtReg {
   //! Set home memory offset.
   ASMJIT_INLINE void setMemOffset(int32_t offset) noexcept { _memOffset = offset; }
 
-  //! Get home memory cell.
-  ASMJIT_INLINE RACell* getMemCell() const noexcept { return _memCell; }
-  //! Set home memory cell.
-  ASMJIT_INLINE void setMemCell(RACell* cell) noexcept { _memCell = cell; }
+  //! Get home stack slot.
+  ASMJIT_INLINE RAStackSlot* getStackSlot() const noexcept { return _stackSlot; }
+  //! Set home stack slot.
+  ASMJIT_INLINE void setStackSlot(RAStackSlot* cell) noexcept { _stackSlot = cell; }
+
+  ASMJIT_INLINE bool hasTiedReg() const noexcept { return _tiedReg != nullptr; }
+  ASMJIT_INLINE TiedReg* getTiedReg() const noexcept { return _tiedReg; }
+  ASMJIT_INLINE void setTiedReg(TiedReg* tiedReg) noexcept { _tiedReg = tiedReg; }
+  ASMJIT_INLINE void resetTiedReg() noexcept { _tiedReg = nullptr; }
+
+  ASMJIT_INLINE bool hasWorkReg() const noexcept { return _workReg != nullptr; }
+  ASMJIT_INLINE WorkReg* getWorkReg() const noexcept { return _workReg; }
+  ASMJIT_INLINE void setWorkReg(WorkReg* workReg) noexcept { _workReg = workReg; }
+  ASMJIT_INLINE void resetWorkReg() noexcept { _workReg = nullptr; }
 
   // --------------------------------------------------------------------------
   // [Members]
   // --------------------------------------------------------------------------
 
   uint32_t _id;                          //!< Virtual register id.
-  RegInfo _regInfo;                      //!< Physical register info & signature.
+  RegInfo _regInfo;                      //!< Register info (signature).
   const char* _name;                     //!< Virtual name (user provided).
   uint32_t _size;                        //!< Virtual size (can be smaller than `regInfo._size`).
   uint8_t _typeId;                       //!< Type-id.
@@ -165,7 +177,6 @@ struct VirtReg {
   // when the VirtReg is created and then changed during RAPass.
   // -------------------------------------------------------------------------
 
-  uint32_t _raId;                        //!< Register allocator work-id (used by RAPass).
   int32_t _memOffset;                    //!< Home memory offset.
   uint32_t _homeMask;                    //!< Mask of all registers variable has been allocated to.
 
@@ -173,83 +184,9 @@ struct VirtReg {
   uint8_t _physId;                       //!< Actual register index (only used by `RAPass)`, during translate.
   uint8_t _modified;                     //!< Whether variable was changed (connected with actual `RAState)`.
 
-  RACell* _memCell;                      //!< Home memory cell, used by `RAPass` (initially nullptr).
-
-  //! Temporary link to TiedReg* used by the `RAPass` used in
-  //! various phases, but always set back to nullptr when finished.
-  //!
-  //! This temporary data is designed to be used by algorithms that need to
-  //! store some data into variables themselves during compilation. But it's
-  //! expected that after variable is compiled & translated the data is set
-  //! back to zero/null. Initial value is nullptr.
-  TiedReg* _tied;
-};
-
-// ============================================================================
-// [asmjit::CCHint]
-// ============================================================================
-
-//! Hint for register allocator (CodeCompiler).
-class CCHint : public CBNode {
-public:
-  ASMJIT_NONCOPYABLE(CCHint)
-
-  //! Hint type.
-  ASMJIT_ENUM(Hint) {
-    //! Alloc to physical reg.
-    kHintAlloc = 0,
-    //! Spill to memory.
-    kHintSpill = 1,
-    //! Save if modified.
-    kHintSave = 2,
-    //! Save if modified and mark it as unused.
-    kHintSaveAndUnuse = 3,
-    //! Mark as unused.
-    kHintUnuse = 4
-  };
-
-  // --------------------------------------------------------------------------
-  // [Construction / Destruction]
-  // --------------------------------------------------------------------------
-
-  //! Create a new `CCHint` instance.
-  ASMJIT_INLINE CCHint(CodeBuilder* cb, VirtReg* vreg, uint32_t hint, uint32_t value) noexcept : CBNode(cb, kNodeHint) {
-    orFlags(kFlagIsRemovable | kFlagIsInformative);
-    _vreg = vreg;
-    _hint = hint;
-    _value = value;
-  }
-
-  //! Destroy the `CCHint` instance (NEVER CALLED).
-  ASMJIT_INLINE ~CCHint() noexcept {}
-
-  // --------------------------------------------------------------------------
-  // [Accessors]
-  // --------------------------------------------------------------------------
-
-  //! Get variable.
-  ASMJIT_INLINE VirtReg* getVReg() const noexcept { return _vreg; }
-
-  //! Get hint it, see \ref Hint.
-  ASMJIT_INLINE uint32_t getHint() const noexcept { return _hint; }
-  //! Set hint it, see \ref Hint.
-  ASMJIT_INLINE void setHint(uint32_t hint) noexcept { _hint = hint; }
-
-  //! Get hint value.
-  ASMJIT_INLINE uint32_t getValue() const noexcept { return _value; }
-  //! Set hint value.
-  ASMJIT_INLINE void setValue(uint32_t value) noexcept { _value = value; }
-
-  // --------------------------------------------------------------------------
-  // [Members]
-  // --------------------------------------------------------------------------
-
-  //! Variable.
-  VirtReg* _vreg;
-  //! Hint id.
-  uint32_t _hint;
-  //! Value.
-  uint32_t _value;
+  TiedReg* _tiedReg;                     //!< Reference to `TiedReg`, used during register allocation.
+  WorkReg* _workReg;                     //!< Reference to `WorkReg`, used during register allocation.
+  RAStackSlot* _stackSlot;               //!< Home stack slot, assigned by `RAPass` (initially nullptr).
 };
 
 // ============================================================================
@@ -276,8 +213,7 @@ public:
       _end(nullptr),
       _args(nullptr),
       _isFinished(false) {
-
-    _type = kNodeFunc;
+    setType(kNodeFunc);
   }
 
   //! Destroy the `CCFunc` instance (NEVER CALLED).
@@ -320,9 +256,9 @@ public:
   }
 
   //! Set argument at `i`.
-  ASMJIT_INLINE void setArg(uint32_t i, VirtReg* vreg) noexcept {
+  ASMJIT_INLINE void setArg(uint32_t i, VirtReg* vReg) noexcept {
     ASMJIT_ASSERT(i < getArgCount());
-    _args[i] = vreg;
+    _args[i] = vReg;
   }
 
   //! Reset argument at `i`.
@@ -364,10 +300,9 @@ public:
   // --------------------------------------------------------------------------
 
   //! Create a new `CCFuncRet` instance.
-  ASMJIT_INLINE CCFuncRet(CodeBuilder* cb, const Operand_& o0, const Operand_& o1) noexcept : CBNode(cb, kNodeFuncExit) {
-    orFlags(kFlagIsRet);
-    _ret[0].copyFrom(o0);
-    _ret[1].copyFrom(o1);
+  ASMJIT_INLINE CCFuncRet(CodeBuilder* cb) noexcept : CBNode(cb, kNodeFuncRet) {
+    _ret[0].reset();
+    _ret[1].reset();
   }
 
   //! Destroy the `CCFuncRet` instance (NEVER CALLED).
@@ -409,15 +344,15 @@ public:
   // --------------------------------------------------------------------------
 
   //! Create a new `CCFuncCall` instance.
-  ASMJIT_INLINE CCFuncCall(CodeBuilder* cb, uint32_t instId, uint32_t options, Operand* opArray, uint32_t opCount) noexcept
-    : CBInst(cb, instId, options, opArray, opCount),
+  ASMJIT_INLINE CCFuncCall(CodeBuilder* cb, uint32_t instId, uint32_t options) noexcept
+    : CBInst(cb, instId, options, kBaseOpCapacity),
       _funcDetail(),
       _args(nullptr) {
-
-    _type = kNodeFuncCall;
+    setType(kNodeFuncCall);
+    _resetOps();
     _ret[0].reset();
     _ret[1].reset();
-    orFlags(kFlagIsRemovable);
+    addFlags(kFlagIsRemovable);
   }
 
   //! Destroy the `CCFuncCall` instance (NEVER CALLED).
@@ -491,53 +426,6 @@ public:
 };
 
 // ============================================================================
-// [asmjit::CCPushArg]
-// ============================================================================
-
-//! Push argument before a function call (CodeCompiler).
-class CCPushArg : public CBNode {
-public:
-  ASMJIT_NONCOPYABLE(CCPushArg)
-
-  // --------------------------------------------------------------------------
-  // [Construction / Destruction]
-  // --------------------------------------------------------------------------
-
-  //! Create a new `CCPushArg` instance.
-  ASMJIT_INLINE CCPushArg(CodeBuilder* cb, CCFuncCall* call, VirtReg* src, VirtReg* cvt) noexcept
-    : CBNode(cb, kNodePushArg),
-      _call(call),
-      _src(src),
-      _cvt(cvt),
-      _args(0) {
-    orFlags(kFlagIsRemovable);
-  }
-
-  //! Destroy the `CCPushArg` instance.
-  ASMJIT_INLINE ~CCPushArg() noexcept {}
-
-  // --------------------------------------------------------------------------
-  // [Accessors]
-  // --------------------------------------------------------------------------
-
-  //! Get the associated function-call.
-  ASMJIT_INLINE CCFuncCall* getCall() const noexcept { return _call; }
-  //! Get source variable.
-  ASMJIT_INLINE VirtReg* getSrcReg() const noexcept { return _src; }
-  //! Get conversion variable.
-  ASMJIT_INLINE VirtReg* getCvtReg() const noexcept { return _cvt; }
-
-  // --------------------------------------------------------------------------
-  // [Members]
-  // --------------------------------------------------------------------------
-
-  CCFuncCall* _call;                     //!< Associated `CCFuncCall`.
-  VirtReg* _src;                         //!< Source variable.
-  VirtReg* _cvt;                         //!< Temporary variable used for conversion (or null).
-  uint32_t _args;                        //!< Affected arguments bit-array.
-};
-
-// ============================================================================
 // [asmjit::CodeCompiler]
 // ============================================================================
 
@@ -570,21 +458,18 @@ public:
   //! Destroy the `CodeCompiler` instance.
   ASMJIT_API virtual ~CodeCompiler() noexcept;
 
+  // TODO: Depreceted
+  ASMJIT_INLINE void alloc(const Reg&) noexcept {}
+  ASMJIT_INLINE void alloc(const Reg&, const Reg&) noexcept {}
+  ASMJIT_INLINE void spill(const Reg&) noexcept {}
+  ASMJIT_INLINE void unuse(const Reg&) noexcept {}
+
   // --------------------------------------------------------------------------
   // [Events]
   // --------------------------------------------------------------------------
 
-  ASMJIT_API virtual Error onAttach(CodeHolder* code) noexcept override;
-  ASMJIT_API virtual Error onDetach(CodeHolder* code) noexcept override;
-
-  // --------------------------------------------------------------------------
-  // [Node-Factory]
-  // --------------------------------------------------------------------------
-
-  //! \internal
-  //!
-  //! Create a new `CCHint`.
-  ASMJIT_API CCHint* newHintNode(Reg& reg, uint32_t hint, uint32_t value) noexcept;
+  ASMJIT_API Error onAttach(CodeHolder* code) noexcept override;
+  ASMJIT_API Error onDetach(CodeHolder* code) noexcept override;
 
   // --------------------------------------------------------------------------
   // [Func]
@@ -675,38 +560,19 @@ public:
   }
   //! Get \ref VirtReg associated with the given `id`.
   ASMJIT_INLINE VirtReg* getVirtRegById(uint32_t id) const noexcept {
-    ASMJIT_ASSERT(id != kInvalidValue);
     size_t index = Operand::unpackId(id);
-
     ASMJIT_ASSERT(index < _vRegArray.getLength());
     return _vRegArray[index];
   }
 
-  //! Get an array of all virtual registers managed by CodeCompiler.
+  //! Get \ref VirtReg associated with the given `index`.
+  ASMJIT_INLINE VirtReg* getVirtRegAt(size_t index) const noexcept {
+    ASMJIT_ASSERT(index < _vRegArray.getLength());
+    return _vRegArray[index];
+  }
+
+  //! Get an array of all virtual registers managed by `CodeCompiler`.
   ASMJIT_INLINE const ZoneVector<VirtReg*>& getVirtRegArray() const noexcept { return _vRegArray; }
-
-  //! Alloc a virtual register `reg`.
-  ASMJIT_API Error alloc(Reg& reg);
-  //! Alloc a virtual register `reg` using `physId` as a register id.
-  ASMJIT_API Error alloc(Reg& reg, uint32_t physId);
-  //! Alloc a virtual register `reg` using `ref` as a register operand.
-  ASMJIT_API Error alloc(Reg& reg, const Reg& ref);
-  //! Spill a virtual register `reg`.
-  ASMJIT_API Error spill(Reg& reg);
-  //! Save a virtual register `reg` if the status is `modified` at this point.
-  ASMJIT_API Error save(Reg& reg);
-  //! Unuse a virtual register `reg`.
-  ASMJIT_API Error unuse(Reg& reg);
-
-  //! Get priority of a virtual register `reg`.
-  ASMJIT_API uint32_t getPriority(Reg& reg) const;
-  //! Set priority of variable `reg` to `priority`.
-  ASMJIT_API void setPriority(Reg& reg, uint32_t priority);
-
-  //! Get save-on-unuse `reg` property.
-  ASMJIT_API bool getSaveOnUnuse(Reg& reg) const;
-  //! Set save-on-unuse `reg` property to `value`.
-  ASMJIT_API void setSaveOnUnuse(Reg& reg, bool value);
 
   //! Rename variable `reg` to `name`.
   //!
@@ -723,7 +589,24 @@ public:
   ZoneVector<VirtReg*> _vRegArray;       //!< Stores array of \ref VirtReg pointers.
 
   CBConstPool* _localConstPool;          //!< Local constant pool, flushed at the end of each function.
-  CBConstPool* _globalConstPool;         //!< Global constant pool, flushed at the end of the compilation.
+  CBConstPool* _globalConstPool;         //!< Global constant pool, flushed by `finalize()`.
+};
+
+// ============================================================================
+// [asmjit::CCFuncPass]
+// ============================================================================
+
+class ASMJIT_VIRTAPI CCFuncPass : public CBPass {
+public:
+  ASMJIT_NONCOPYABLE(CCFuncPass)
+  typedef CBPass Base;
+
+  ASMJIT_API CCFuncPass(const char* name) noexcept;
+
+  //! Calls `runOnFunction()` on each `CCFunc` node found.
+  ASMJIT_API Error run(Zone* zone) noexcept override;
+
+  virtual Error runOnFunction(Zone* zone, CCFunc* func) noexcept = 0;
 };
 
 //! \}

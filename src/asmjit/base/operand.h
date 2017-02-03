@@ -119,7 +119,7 @@ struct Operand_ {
     //! Maximum valid packed-id.
     kPackedIdMax    = 0xFFFFFFFFU,
     //! Count of valid packed-ids.
-    kPackedIdCount  = kPackedIdMax - kPackedIdMin + 1
+    kPackedIdCount  = static_cast<unsigned int>(kPackedIdMax - kPackedIdMin + 1)
   };
 
   // --------------------------------------------------------------------------
@@ -133,7 +133,7 @@ struct Operand_ {
   //! a single uint32_t to contain either physical register id or virtual
   //! register id represented as `packed-id`. This concept is used also for
   //! labels to make the API consistent.
-  static ASMJIT_INLINE bool isPackedId(uint32_t id) noexcept { return id - kPackedIdMin < kPackedIdCount; }
+  static ASMJIT_INLINE bool isPackedId(uint32_t id) noexcept { return id - kPackedIdMin < static_cast<unsigned int>(kPackedIdCount); }
   //! Convert a real-id into a packed-id that can be stored in Operand.
   static ASMJIT_INLINE uint32_t packId(uint32_t id) noexcept { return id + kPackedIdMin; }
   //! Convert a packed-id back to real-id.
@@ -585,6 +585,12 @@ public:                                                                       \
   static ASMJIT_INLINE REG_T fromSignature(uint32_t signature, uint32_t rId) ASMJIT_NOEXCEPT { \
     return REG_T(Init, signature, rId);                                       \
   }                                                                           \
+  /* TODO: Depreceted */                                                      \
+  ASMJIT_INLINE REG_T m() const noexcept { return *this; }                    \
+  ASMJIT_INLINE REG_T m8() const noexcept { return *this; }                   \
+  ASMJIT_INLINE REG_T m16() const noexcept { return *this; }                  \
+  ASMJIT_INLINE REG_T m32() const noexcept { return *this; }                  \
+  ASMJIT_INLINE REG_T m64() const noexcept { return *this; }                  \
                                                                               \
   ASMJIT_INLINE REG_T& operator=(const REG_T& other) ASMJIT_NOEXCEPT {        \
     copyFrom(other); return *this;                                            \

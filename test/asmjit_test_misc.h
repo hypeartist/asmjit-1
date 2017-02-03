@@ -49,10 +49,6 @@ static void generateAlphaBlend(asmjit::X86Compiler& cc) {
   cc.setArg(1, src);
   cc.setArg(2, i);
 
-  cc.alloc(dst);
-  cc.alloc(src);
-  cc.alloc(i);
-
   // How many pixels have to be processed to make the loop aligned.
   cc.lea(t, ptr(L_DataPool));
   cc.xor_(j, j);
@@ -77,12 +73,11 @@ static void generateAlphaBlend(asmjit::X86Compiler& cc) {
   // Small loop.
   cc.bind(L_SmallLoop);
 
-  cc.pcmpeqb(a0, a0);
   cc.movd(y0, ptr(src));
-
-  cc.pxor(a0, y0);
   cc.movd(x0, ptr(dst));
 
+  cc.pcmpeqb(a0, a0);
+  cc.pxor(a0, y0);
   cc.psrlw(a0, 8);
   cc.punpcklbw(x0, cZero);
 
@@ -119,9 +114,9 @@ static void generateAlphaBlend(asmjit::X86Compiler& cc) {
   cc.bind(L_LargeLoop);
 
   cc.movups(y0, ptr(src));
-  cc.pcmpeqb(a0, a0);
   cc.movaps(x0, ptr(dst));
 
+  cc.pcmpeqb(a0, a0);
   cc.xorps(a0, y0);
   cc.movaps(x1, x0);
 

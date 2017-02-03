@@ -20,7 +20,7 @@
 
 namespace asmjit {
 
-//! \addtogroup asmjit_base
+//! \addtogroup asmjit_x86
 //! \{
 
 // ============================================================================
