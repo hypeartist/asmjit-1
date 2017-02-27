@@ -120,6 +120,7 @@ static const char* x86GetAddressSizeString(uint32_t size) noexcept {
     case 1 : return "byte ";
     case 2 : return "word ";
     case 4 : return "dword ";
+    case 6 : return "fword ";
     case 8 : return "qword ";
     case 10: return "tword ";
     case 16: return "oword ";
@@ -581,34 +582,29 @@ ASMJIT_FAVOR_SIZE Error X86Logging::formatInstruction(
   uint32_t archType,
   uint32_t instId,
   uint32_t options,
-  const Operand_& opExtra,
+  const Operand_& extraOp,
   const Operand_* opArray, uint32_t opCount) noexcept {
-
-  bool opExtraDone = false;
 
   // Format instruction options and instruction mnemonic.
   if (instId < X86Inst::_kIdCount) {
     const X86Inst& instInfo = X86Inst::getInst(instId);
 
-    // SHORT/LONG forms.
+    // SHORT|LONG options.
     if (options & X86Inst::kOptionShortForm) ASMJIT_PROPAGATE(sb.appendString("short "));
     if (options & X86Inst::kOptionLongForm) ASMJIT_PROPAGATE(sb.appendString("long "));
 
-    // LOCK option.
+    // LOCK|XACQUIRE|XRELEASE options.
+    if (options & X86Inst::kOptionXAcquire) ASMJIT_PROPAGATE(sb.appendString("xacquire "));
+    if (options & X86Inst::kOptionXRelease) ASMJIT_PROPAGATE(sb.appendString("xrelease "));
     if (options & X86Inst::kOptionLock) ASMJIT_PROPAGATE(sb.appendString("lock "));
 
-    // REP options.
+    // REP|REPNZ options.
     if (options & (X86Inst::kOptionRep | X86Inst::kOptionRepnz)) {
-      const char* rep = "repnz ";
-      if ((options & (X86Inst::kOptionRep | X86Inst::kOptionRepnz)) == X86Inst::kOptionRep)
-        rep = instInfo.hasFlag(X86Inst::kInstFlagRepnz) ? "repz " : "rep ";
-
-      sb.appendString(rep);
-      if (!opExtra.isNone()) {
+      sb.appendString((options & X86Inst::kOptionRep) ? "rep " : "repnz ");
+      if (!extraOp.isNone()) {
         ASMJIT_PROPAGATE(sb.appendChar('{'));
-        ASMJIT_PROPAGATE(formatOperand(sb, logOptions, emitter, archType, opExtra));
+        ASMJIT_PROPAGATE(formatOperand(sb, logOptions, emitter, archType, extraOp));
         ASMJIT_PROPAGATE(sb.appendString("} "));
-        opExtraDone = true;
       }
     }
 
@@ -631,9 +627,9 @@ ASMJIT_FAVOR_SIZE Error X86Logging::formatInstruction(
       }
     }
 
-    // VEX options.
-    if (options & X86Inst::kOptionVex3)
-      ASMJIT_PROPAGATE(sb.appendString("vex3 "));
+    // VEX|EVEX options.
+    if (options & X86Inst::kOptionVex3) ASMJIT_PROPAGATE(sb.appendString("vex3 "));
+    if (options & X86Inst::kOptionEvex) ASMJIT_PROPAGATE(sb.appendString("evex "));
 
     ASMJIT_PROPAGATE(sb.appendString(instInfo.getName()));
   }
@@ -658,20 +654,15 @@ ASMJIT_FAVOR_SIZE Error X86Logging::formatInstruction(
 
     // Support AVX-512 {k}{z}.
     if (i == 0) {
-      const uint32_t kExtMsk =
-        X86Inst::kOptionOpExtra |
-        X86Inst::kOptionRep     |
-        X86Inst::kOptionRepnz   ;
-
-      if ((options & kExtMsk) == X86Inst::kOptionOpExtra) {
+      if (X86Reg::isK(extraOp)) {
         ASMJIT_PROPAGATE(sb.appendString(" {"));
-        ASMJIT_PROPAGATE(formatOperand(sb, logOptions, emitter, archType, opExtra));
+        ASMJIT_PROPAGATE(formatOperand(sb, logOptions, emitter, archType, extraOp));
         ASMJIT_PROPAGATE(sb.appendChar('}'));
 
-        if (options & X86Inst::kOptionKZ)
+        if (options & X86Inst::kOptionZMask)
           ASMJIT_PROPAGATE(sb.appendString("{z}"));
       }
-      else if (options & X86Inst::kOptionKZ) {
+      else if (options & X86Inst::kOptionZMask) {
         ASMJIT_PROPAGATE(sb.appendString(" {z}"));
       }
     }

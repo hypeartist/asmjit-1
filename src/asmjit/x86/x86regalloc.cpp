@@ -73,8 +73,8 @@ static ASMJIT_INLINE const X86SpecialInst* X86SpecialInst_get(uint32_t instId, c
   static const X86SpecialInst instPcmpistri[]    = { R(kAny), R(kAny), NONE(), W(X86Gp::kIdCx), R(X86Gp::kIdAx), R(X86Gp::kIdDx) };
   static const X86SpecialInst instPcmpistrm[]    = { R(kAny), R(kAny), NONE(), W(0)           , R(X86Gp::kIdAx), R(X86Gp::kIdDx) };
   static const X86SpecialInst instXsaveXrstor[]  = { W(kAny), R(X86Gp::kIdDx), R(X86Gp::kIdAx) };
-  static const X86SpecialInst instXgetbv[]       = { W(X86Gp::kIdDx), W(X86Gp::kIdAx), R(X86Gp::kIdCx) };
-  static const X86SpecialInst instXsetbv[]       = { R(X86Gp::kIdDx), R(X86Gp::kIdAx), R(X86Gp::kIdCx) };
+  static const X86SpecialInst instReadMR[]       = { W(X86Gp::kIdDx), W(X86Gp::kIdAx), R(X86Gp::kIdCx) };
+  static const X86SpecialInst instWriteMR[]      = { R(X86Gp::kIdDx), R(X86Gp::kIdAx), R(X86Gp::kIdCx) };
 
   static const X86SpecialInst instCmps[]         = { X(X86Gp::kIdSi), X(X86Gp::kIdDi) };
   static const X86SpecialInst instLods[]         = { W(X86Gp::kIdAx), X(X86Gp::kIdSi) };
@@ -160,8 +160,11 @@ static ASMJIT_INLINE const X86SpecialInst* X86SpecialInst_get(uint32_t instId, c
     case X86Inst::kIdXsave64    :
     case X86Inst::kIdXsaveopt   :
     case X86Inst::kIdXsaveopt64 : return instXsaveXrstor;
-    case X86Inst::kIdXgetbv     : return instXgetbv;
-    case X86Inst::kIdXsetbv     : return instXsetbv;
+    case X86Inst::kIdRdmsr      :
+    case X86Inst::kIdRdpmc      :
+    case X86Inst::kIdXgetbv     : return instReadMR;
+    case X86Inst::kIdWrmsr      :
+    case X86Inst::kIdXsetbv     : return instWriteMR;
     default                     : return nullptr;
   }
 }
@@ -1488,14 +1491,15 @@ _NextGroup:
 
         RA_DECLARE();
         if (opCount) {
-          const X86Inst::CommonData& commonData = X86Inst::getInst(instId).getCommonData();
+          const X86Inst& inst = X86Inst::getInst(instId);
+          const X86Inst::CommonData& commonData = inst.getCommonData();
           const X86SpecialInst* special = nullptr;
 
           // Collect instruction flags and merge all 'TiedReg's.
-          if (commonData.isFp())
+          if (commonData.isFpu())
             flags |= CBNode::kFlagIsFp;
 
-          if (commonData.isSpecial() && (special = X86SpecialInst_get(instId, opArray, opCount)) != nullptr)
+          if (commonData.hasFixedRM() && (special = X86SpecialInst_get(instId, opArray, opCount)) != nullptr)
             flags |= CBNode::kFlagIsSpecial;
 
           for (uint32_t i = 0; i < opCount; i++) {
@@ -1571,14 +1575,14 @@ _NextGroup:
                     // Manually forcing write-only.
                     combinedFlags = outFlags;
                   }
-                  else if (commonData.isWO()) {
+                  else if (commonData.isUseW()) {
                     // Write-only instruction.
                     uint32_t movSize = commonData.getWriteSize();
                     uint32_t regSize = vreg->getSize();
 
                     // Exception - If the source operand is a memory location
                     // promote move size into 16 bytes.
-                    if (commonData.isZeroIfMem() && opArray[1].isMem())
+                    if (opArray[1].isMem() && inst.getOperationData().isMovSsSd())
                       movSize = 16;
 
                     if (static_cast<const X86Reg*>(op)->isGp()) {
@@ -1596,14 +1600,14 @@ _NextGroup:
                       if (movSize >= 4 || movSize >= regSize)
                         combinedFlags = outFlags;
                     }
-                    else if (movSize >= regSize) {
+                    else if (movSize == 0 || movSize >= regSize) {
                       // If move size is greater than or equal to the size of
                       // the variable there is nothing to do, because the move
                       // will overwrite the variable in all cases.
                       combinedFlags = outFlags;
                     }
                   }
-                  else if (commonData.isRO()) {
+                  else if (commonData.isUseR()) {
                     // Comparison/Test instructions don't modify any operand.
                     combinedFlags = inFlags;
                   }
@@ -1620,7 +1624,7 @@ _NextGroup:
                   ASMJIT_ASSERT(instId != X86Inst::kIdIdiv);
 
                   // Xchg/Xadd/Imul.
-                  if (commonData.isXchg() || (instId == X86Inst::kIdImul && opCount == 3 && i == 1))
+                  if (commonData.isUseXX() || (instId == X86Inst::kIdImul && opCount == 3 && i == 1))
                     combinedFlags = inFlags | outFlags;
                 }
                 tied->flags |= combinedFlags;
@@ -1647,7 +1651,7 @@ _NextGroup:
                         // Default for the first operand.
                         combinedFlags = inFlags | outFlags;
 
-                        if (commonData.isWO()) {
+                        if (commonData.isUseW()) {
                           // Move to memory - setting the right flags is important
                           // as if it's just move to the register. It's just a bit
                           // simpler as there are no special cases.
@@ -1657,7 +1661,7 @@ _NextGroup:
                           if (movSize >= regSize)
                             combinedFlags = outFlags;
                         }
-                        else if (commonData.isRO()) {
+                        else if (commonData.isUseR()) {
                           // Comparison/Test instructions don't modify any operand.
                           combinedFlags = inFlags;
                         }
@@ -1667,7 +1671,7 @@ _NextGroup:
                         combinedFlags = inFlags;
 
                         // Handle Xchg instruction (modifies both operands).
-                        if (commonData.isXchg())
+                        if (commonData.isUseXX())
                           combinedFlags = inFlags | outFlags;
                       }
 
@@ -1713,11 +1717,15 @@ _NextGroup:
             if (tiedTotal == 1 && opCount >= 2 && opArray[0].isVirtReg() && opArray[1].isVirtReg() && !node->hasMemOp())
               X86RAPass_prepareSingleVarInst(instId, &agTmp[0]);
           }
+
+          // Turn on AVX if the instruction operates on XMM|YMM|ZMM registers and uses VEX|EVEX prefix.
+          if (tiedCount.getVec() && commonData.hasFlag(X86Inst::kFlagVex | X86Inst::kFlagEvex))
+            _avxEnabled = true;
         }
 
-        const Operand_& opExtra = node->getOpExtra();
-        if ((options & CodeEmitter::kOptionOpExtra) != 0 && opExtra.isReg()) {
-          uint32_t id = opExtra.as<Reg>().getId();
+        const Operand_& extraOp = node->getExtraOp();
+        if (extraOp.isReg()) {
+          uint32_t id = extraOp.as<Reg>().getId();
           if (cc()->isVirtRegValid(id)) {
             VirtReg* vreg = cc()->getVirtRegById(id);
             TiedReg* tied;
@@ -2050,10 +2058,10 @@ _NextGroup:
         }
 
         // Init clobbered.
-        clobberedRegs.set(X86Reg::kKindGp , Utils::bits(_regCount.getGp())  & (~fd.getPreservedRegs(X86Reg::kKindGp )));
-        clobberedRegs.set(X86Reg::kKindMm , Utils::bits(_regCount.getMm())  & (~fd.getPreservedRegs(X86Reg::kKindMm )));
-        clobberedRegs.set(X86Reg::kKindK  , Utils::bits(_regCount.getK())   & (~fd.getPreservedRegs(X86Reg::kKindK  )));
-        clobberedRegs.set(X86Reg::kKindVec, Utils::bits(_regCount.getVec()) & (~fd.getPreservedRegs(X86Reg::kKindVec)));
+        clobberedRegs.set(X86Reg::kKindGp , Utils::bits(_regCount.getGp())  & (fd.getPassedRegs(X86Reg::kKindGp ) | ~fd.getPreservedRegs(X86Reg::kKindGp )));
+        clobberedRegs.set(X86Reg::kKindMm , Utils::bits(_regCount.getMm())  & (fd.getPassedRegs(X86Reg::kKindMm ) | ~fd.getPreservedRegs(X86Reg::kKindMm )));
+        clobberedRegs.set(X86Reg::kKindK  , Utils::bits(_regCount.getK())   & (fd.getPassedRegs(X86Reg::kKindK  ) | ~fd.getPreservedRegs(X86Reg::kKindK  )));
+        clobberedRegs.set(X86Reg::kKindVec, Utils::bits(_regCount.getVec()) & (fd.getPassedRegs(X86Reg::kKindVec) | ~fd.getPreservedRegs(X86Reg::kKindVec)));
 
         RA_FINALIZE(node_);
         break;
@@ -2111,7 +2119,7 @@ Error X86RAPass::annotate() {
           cc()->getArchType(),
           node->getInstId(),
           node->getOptions(),
-          node->getOpExtra(),
+          node->getExtraOp(),
           node->getOpArray(), node->getOpCount());
 
         node_->setInlineComment(
@@ -2415,6 +2423,8 @@ Error X86VarAlloc::run(CBNode* node_) {
     // Translate node operands.
     if (node_->getType() == CBNode::kNodeInst) {
       CBInst* node = static_cast<CBInst*>(node_);
+      if (node->hasExtraOp())
+        ASMJIT_PROPAGATE(X86RAPass_translateOperands(_context, &node->_extraOp, 1));
       ASMJIT_PROPAGATE(X86RAPass_translateOperands(_context, node->getOpArray(), node->getOpCount()));
     }
     else if (node_->getType() == CBNode::kNodePushArg) {
@@ -2439,7 +2449,7 @@ Error X86VarAlloc::run(CBNode* node_) {
         X86Reg srcOp(X86Reg::fromSignature(srcReg->getSignature(), srcReg->getId()));
 
         // Emit conversion after the prolog.
-        return X86Internal::emitArgMove(reinterpret_cast<X86Emitter*>(_context->cc()),
+        X86Internal::emitArgMove(reinterpret_cast<X86Emitter*>(_context->cc()),
           dstOp, cvtReg->getTypeId(),
           srcOp, srcReg->getTypeId(), _context->_avxEnabled);
         srcReg = cvtReg;
@@ -3614,7 +3624,7 @@ ASMJIT_INLINE void X86CallAlloc::ret() {
 static Error X86RAPass_translateOperands(X86RAPass* self, Operand_* opArray, uint32_t opCount) {
   X86Compiler* cc = self->cc();
 
-  // Translate variables into isters.
+  // Translate variables into registers.
   for (uint32_t i = 0; i < opCount; i++) {
     Operand_* op = &opArray[i];
     if (op->isVirtReg()) {

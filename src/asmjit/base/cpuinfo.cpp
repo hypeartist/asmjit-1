@@ -285,10 +285,9 @@ static void ASMJIT_INLINE x86CallCpuId(CpuIdResult* result, uint32_t inEax, uint
         "=c"(result->ecx),
         "=d"(result->edx)
       : "a"(inEax),
-        "c"(inEcx)
-  );
+        "c"(inEcx));
 #elif (ASMJIT_CC_GCC || ASMJIT_CC_CLANG || ASMJIT_CC_INTEL) && ASMJIT_ARCH_X64
-  __asm__ __volatile__( \
+  __asm__ __volatile__(
     "mov %%rbx, %%rdi\n"
     "cpuid\n"
     "xchg %%rdi, %%rbx\n"
@@ -297,8 +296,7 @@ static void ASMJIT_INLINE x86CallCpuId(CpuIdResult* result, uint32_t inEax, uint
         "=c"(result->ecx),
         "=d"(result->edx)
       : "a"(inEax),
-        "c"(inEcx)
-  );
+        "c"(inEcx));
 #else
 # error "[asmjit] x86CallCpuid() - Unsupported compiler."
 #endif
@@ -395,6 +393,7 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
   XGetBVResult xcr0 = { 0, 0 };
 
   cpuInfo->_archInfo.init(ArchInfo::kTypeHost);
+  cpuInfo->addFeature(CpuInfo::kX86FeatureI486);
 
   // --------------------------------------------------------------------------
   // [CPUID EAX=0x0]
@@ -444,9 +443,10 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
     if (regs.ecx & 0x00800000U) cpuInfo->addFeature(CpuInfo::kX86FeaturePOPCNT);
     if (regs.ecx & 0x02000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureAESNI);
     if (regs.ecx & 0x04000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureXSAVE);
-    if (regs.ecx & 0x08000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureXSAVE_OS);
+    if (regs.ecx & 0x08000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureOSXSAVE);
     if (regs.ecx & 0x40000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureRDRAND);
     if (regs.edx & 0x00000010U) cpuInfo->addFeature(CpuInfo::kX86FeatureRDTSC);
+    if (regs.edx & 0x00000020U) cpuInfo->addFeature(CpuInfo::kX86FeatureMSR);
     if (regs.edx & 0x00000100U) cpuInfo->addFeature(CpuInfo::kX86FeatureCMPXCHG8B);
     if (regs.edx & 0x00008000U) cpuInfo->addFeature(CpuInfo::kX86FeatureCMOV);
     if (regs.edx & 0x00080000U) cpuInfo->addFeature(CpuInfo::kX86FeatureCLFLUSH);
@@ -470,14 +470,14 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
       if ((xcr0.eax & 0x00000006U) == 0x00000006U) {
         cpuInfo->addFeature(CpuInfo::kX86FeatureAVX);
 
-        if (regs.ecx & 0x00004000U) cpuInfo->addFeature(CpuInfo::kX86FeatureFMA3);
+        if (regs.ecx & 0x00004000U) cpuInfo->addFeature(CpuInfo::kX86FeatureFMA);
         if (regs.ecx & 0x20000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureF16C);
       }
     }
   }
 
   // --------------------------------------------------------------------------
-  // [CPUID EAX=0x7 ECX=0x0]
+  // [CPUID EAX=0x7]
   // --------------------------------------------------------------------------
 
   // Detect new features if the processor supports CPUID-07.
@@ -498,10 +498,13 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
     if (regs.ebx & 0x00080000U) cpuInfo->addFeature(CpuInfo::kX86FeatureADX);
     if (regs.ebx & 0x00100000U) cpuInfo->addFeature(CpuInfo::kX86FeatureSMAP);
     if (regs.ebx & 0x00400000U) cpuInfo->addFeature(CpuInfo::kX86FeaturePCOMMIT);
-    if (regs.ebx & 0x00800000U) cpuInfo->addFeature(CpuInfo::kX86FeatureCLFLUSH_OPT);
+    if (regs.ebx & 0x00800000U) cpuInfo->addFeature(CpuInfo::kX86FeatureCLFLUSHOPT);
     if (regs.ebx & 0x01000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureCLWB);
     if (regs.ebx & 0x20000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureSHA);
     if (regs.ecx & 0x00000001U) cpuInfo->addFeature(CpuInfo::kX86FeaturePREFETCHWT1);
+
+    // TSX is supported if at least one of `HLE` and `RTM` is supported.
+    if (regs.ebx & 0x00000810U) cpuInfo->addFeature(CpuInfo::kX86FeatureTSX);
 
     // Detect AVX2.
     if (cpuInfo->hasFeature(CpuInfo::kX86FeatureAVX)) {
@@ -533,16 +536,18 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
   }
 
   // --------------------------------------------------------------------------
-  // [CPUID EAX=0xD, ECX=0x0]
+  // [CPUID EAX=0xD]
   // --------------------------------------------------------------------------
 
-  if (maxId >= 0xD && maybeMPX) {
-    x86CallCpuId(&regs, 0xD);
+  if (maxId >= 0xD) {
+    x86CallCpuId(&regs, 0xD, 0);
 
     // Both CPUID result and XCR0 has to be enabled to have support for MPX.
-    if (((regs.eax & xcr0.eax) & 0x00000018U) == 0x00000018U) {
+    if (((regs.eax & xcr0.eax) & 0x00000018U) == 0x00000018U && maybeMPX)
       cpuInfo->addFeature(CpuInfo::kX86FeatureMPX);
-    }
+
+    x86CallCpuId(&regs, 0xD, 1);
+    if (regs.eax & 0x00000001U) cpuInfo->addFeature(CpuInfo::kX86FeatureXSAVEOPT);
   }
 
   // --------------------------------------------------------------------------
@@ -565,14 +570,14 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
         break;
 
       case 0x80000001U:
-        if (regs.ecx & 0x00000001U) cpuInfo->addFeature(CpuInfo::kX86FeatureLAHF_SAHF);
+        if (regs.ecx & 0x00000001U) cpuInfo->addFeature(CpuInfo::kX86FeatureLAHFSAHF);
         if (regs.ecx & 0x00000020U) cpuInfo->addFeature(CpuInfo::kX86FeatureLZCNT);
         if (regs.ecx & 0x00000040U) cpuInfo->addFeature(CpuInfo::kX86FeatureSSE4A);
         if (regs.ecx & 0x00000080U) cpuInfo->addFeature(CpuInfo::kX86FeatureMSSE);
-        if (regs.ecx & 0x00000100U) cpuInfo->addFeature(CpuInfo::kX86FeaturePREFETCH);
+        if (regs.ecx & 0x00000100U) cpuInfo->addFeature(CpuInfo::kX86FeaturePREFETCHW);
         if (regs.ecx & 0x00200000U) cpuInfo->addFeature(CpuInfo::kX86FeatureTBM);
         if (regs.edx & 0x00100000U) cpuInfo->addFeature(CpuInfo::kX86FeatureNX);
-        if (regs.edx & 0x00200000U) cpuInfo->addFeature(CpuInfo::kX86FeatureFXSR_OPT);
+        if (regs.edx & 0x00200000U) cpuInfo->addFeature(CpuInfo::kX86FeatureFXSROPT);
         if (regs.edx & 0x00400000U) cpuInfo->addFeature(CpuInfo::kX86FeatureMMX2);
         if (regs.edx & 0x08000000U) cpuInfo->addFeature(CpuInfo::kX86FeatureRDTSCP);
         if (regs.edx & 0x40000000U) cpuInfo->addFeature(CpuInfo::kX86Feature3DNOW2)
@@ -582,6 +587,11 @@ ASMJIT_FAVOR_SIZE static void x86DetectCpuInfo(CpuInfo* cpuInfo) noexcept {
         if (cpuInfo->hasFeature(CpuInfo::kX86FeatureAVX)) {
           if (regs.ecx & 0x00000800U) cpuInfo->addFeature(CpuInfo::kX86FeatureXOP);
           if (regs.ecx & 0x00010000U) cpuInfo->addFeature(CpuInfo::kX86FeatureFMA4);
+        }
+
+        // These seem to be only supported by AMD.
+        if (cpuInfo->getVendorId() == CpuInfo::kVendorAMD) {
+          if (regs.ecx & 0x00000010U) cpuInfo->addFeature(CpuInfo::kX86FeatureALTMOVCR8);
         }
         break;
 

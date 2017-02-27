@@ -177,6 +177,16 @@ ASMJIT_ENUM(ErrorCode) {
   kErrorInvalidPhysId,
   //! Invalid register's virtual id.
   kErrorInvalidVirtId,
+  //! Invalid prefix combination.
+  kErrorInvalidPrefixCombination,
+  //! Invalid LOCK prefix.
+  kErrorInvalidLockPrefix,
+  //! Invalid XACQUIRE prefix.
+  kErrorInvalidXAcquirePrefix,
+  //! Invalid XACQUIRE prefix.
+  kErrorInvalidXReleasePrefix,
+  //! Invalid REP prefix.
+  kErrorInvalidRepPrefix,
   //! Invalid REX prefix.
   kErrorInvalidRexPrefix,
   //! Invalid mask register (not 'k').
@@ -199,13 +209,18 @@ ASMJIT_ENUM(ErrorCode) {
   kErrorInvalidAddress64Bit,
   //! Invalid displacement (not encodable).
   kErrorInvalidDisplacement,
-  //! Invalid segment.
+  //! Invalid segment (X86).
   kErrorInvalidSegment,
 
-  //! Mismatching operand size (size of multiple operands doesn't match the operation size).
-  kErrorOperandSizeMismatch,
+  //! Invalid immediate (out of bounds on X86 and invalid pattern on ARM).
+  kErrorInvalidImmediate,
+
+  //! Invalid operand size.
+  kErrorInvalidOperandSize,
   //! Ambiguous operand size (memory has zero size while it's required to determine the operation type.
   kErrorAmbiguousOperandSize,
+  //! Mismatching operand size (size of multiple operands doesn't match the operation size).
+  kErrorOperandSizeMismatch,
 
   //! Invalid TypeId.
   kErrorInvalidTypeId,
@@ -215,6 +230,8 @@ ASMJIT_ENUM(ErrorCode) {
   kErrorInvalidUseOfGpq,
   //! Invalid use of an 80-bit float (TypeId::kF80).
   kErrorInvalidUseOfF80,
+  //! Some registers in the instruction muse be consecutive (some ARM and AVX512 neural-net instructions).
+  kErrorNotConsecutiveRegs,
 
   //! AsmJit requires a physical register, but no one is available.
   kErrorNoMorePhysRegs,
